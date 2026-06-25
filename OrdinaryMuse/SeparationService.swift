@@ -24,9 +24,11 @@ final class SeparationService: ObservableObject {
     @Published var isProcessing = false
     @Published var statusText = ""
     @Published var serverURL: String = "http://30.165.116.246:8000"
+    let localURL = "http://127.0.0.1:8000"
+    let lanURLPlaceholder = "http://192.168.1.100:8000"
 
     func healthCheck() async -> Bool {
-        guard let url = URL(string: "\(serverURL)/api/v1/health") else { return false }
+        guard let url = endpoint("/api/v1/health") else { return false }
         do {
             log("health check: \(url.absoluteString)")
             let (_, response) = try await URLSession.shared.data(from: url)
@@ -72,14 +74,18 @@ final class SeparationService: ObservableObject {
         return urls
     }
 
+    func applyServerURL(_ rawValue: String) {
+        serverURL = Self.normalizedBaseURL(rawValue)
+    }
+
     private func submitTask(audioData: Data, filename: String) async throws -> String {
-        guard let url = URL(string: "\(serverURL)/api/v1/separate/async") else {
+        guard let url = endpoint("/api/v1/separate/async") else {
             throw SeparationServiceError.serverUnavailable
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 60
+        request.timeoutInterval = 300
 
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)",
@@ -107,7 +113,7 @@ final class SeparationService: ObservableObject {
     }
 
     private func pollUntilComplete(taskId: String) async throws {
-        guard let url = URL(string: "\(serverURL)/api/v1/task/\(taskId)") else {
+        guard let url = endpoint("/api/v1/task/\(taskId)") else {
             throw SeparationServiceError.serverUnavailable
         }
 
@@ -145,7 +151,7 @@ final class SeparationService: ObservableObject {
         let stemNames = ["vocals", "drums", "bass", "other"]
 
         for (i, name) in stemNames.enumerated() {
-            guard let url = URL(string: "\(serverURL)/api/v1/task/\(taskId)/stem/\(name)") else {
+            guard let url = endpoint("/api/v1/task/\(taskId)/stem/\(name)") else {
                 throw SeparationServiceError.serverUnavailable
             }
             let (data, response) = try await URLSession.shared.data(from: url)
@@ -185,6 +191,18 @@ final class SeparationService: ObservableObject {
 
     private func log(_ message: String) {
         print("[DemucsService] \(message)")
+    }
+
+    private func endpoint(_ path: String) -> URL? {
+        URL(string: "\(Self.normalizedBaseURL(serverURL))\(path)")
+    }
+
+    private static func normalizedBaseURL(_ rawValue: String) -> String {
+        var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
     }
 
     private static func preview(_ data: Data, limit: Int = 500) -> String {

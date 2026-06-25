@@ -313,8 +313,25 @@ struct ContentView: View {
                                 .autocorrectionDisabled()
                                 .textInputAutocapitalization(.never)
 
+                            HStack(spacing: 8) {
+                                ServerPresetButton(title: "本机", icon: "desktopcomputer") {
+                                    demucsService.applyServerURL(demucsService.localURL)
+                                }
+
+                                ServerPresetButton(title: "局域网", icon: "wifi") {
+                                    demucsService.applyServerURL(demucsService.lanURLPlaceholder)
+                                }
+
+                                ServerPresetButton(title: "粘贴隧道", icon: "link") {
+                                    if let value = UIPasteboard.general.string, !value.isEmpty {
+                                        demucsService.applyServerURL(value)
+                                    }
+                                }
+                            }
+
                             Button {
                                 Task {
+                                    demucsService.applyServerURL(demucsService.serverURL)
                                     let ok = await demucsService.healthCheck()
                                     demucsService.statusText = ok ? "服务器连接正常" : "无法连接服务器"
                                 }
@@ -1140,6 +1157,31 @@ private struct MuseButtonLabel: View {
         }
         .foregroundStyle(foreground)
         .frame(maxWidth: .infinity)
+    }
+}
+
+private struct ServerPresetButton: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            .foregroundStyle(Color.museText)
+            .frame(maxWidth: .infinity, minHeight: 32)
+            .background(Capsule().fill(Color.white.opacity(0.07)))
+            .overlay {
+                Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1)
+            }
+        }
     }
 }
 
