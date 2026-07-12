@@ -14,7 +14,35 @@ pip install -r requirements.txt
 brew install ffmpeg
 ```
 
-### 2. 启动隧道
+### 2. 本地启动 Demucs 服务
+
+```bash
+cd "/Users/lyc/Downloads/Ordinary Muse/demucs-server"
+source .venv/bin/activate
+./start.sh
+```
+
+默认服务地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/health
+```
+
+指定端口或推理设备：
+
+```bash
+SERVER_PORT=8000 DEMUCS_DEVICE=auto ./start.sh
+DEMUCS_DEVICE=cpu ./start.sh
+DEMUCS_DEVICE=mps ./start.sh
+```
+
+### 3. 启动隧道
 
 Cloudflare Tunnel:
 
@@ -24,6 +52,7 @@ brew install cloudflared
 ```
 
 ngrok:
+
 
 ```bash
 brew install ngrok/ngrok/ngrok
@@ -44,7 +73,7 @@ ngrok config add-authtoken <your-token>
 内网端口: 8000
 ```
 
-### 3. 在 App 中使用
+### 4. 在 App 中使用
 
 打开 App：
 
@@ -62,7 +91,7 @@ https://example.vicp.fun
 
 也可以先复制公网地址，再点击“粘贴隧道”。点击“测试连接”显示连接正常后即可开始模型分离。
 
-### 4. 注意事项
+### 5. 注意事项
 
 - 隧道 URL 免费版可能会变化，变更后需要重新填入 App。
 - 本机必须保持开机，`start_tunnel.sh` 终端不能关闭。
