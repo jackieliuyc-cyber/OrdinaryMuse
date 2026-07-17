@@ -298,7 +298,7 @@ struct ContentView: View {
                                     .foregroundStyle(Color.museMuted)
                                 Spacer()
                             }
-                            TextField("http://30.165.116.246:8000", text: $demucsService.serverURL)
+                            TextField("http://12630gj35tf95.vicp.fun", text: $demucsService.serverURL)
                                 .font(.system(size: 13, weight: .medium, design: .monospaced))
                                 .foregroundStyle(Color.museText)
                                 .padding(10)

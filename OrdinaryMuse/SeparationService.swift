@@ -23,7 +23,7 @@ final class SeparationService: ObservableObject {
     @Published var progress: Double = 0
     @Published var isProcessing = false
     @Published var statusText = ""
-    @Published var serverURL: String = "http://30.165.116.246:8000"
+    @Published var serverURL: String = "http://12630gj35tf95.vicp.fun"
     let localURL = "http://127.0.0.1:8000"
     let lanURLPlaceholder = "http://192.168.1.100:8000"
 
@@ -199,6 +199,20 @@ final class SeparationService: ObservableObject {
 
     private static func normalizedBaseURL(_ rawValue: String) -> String {
         var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if var components = URLComponents(string: value),
+           components.scheme != nil,
+           components.host != nil {
+            let removableSuffixes = ["/api/v1/health", "/api/v1", "/docs"]
+            for suffix in removableSuffixes where components.path.hasSuffix(suffix) {
+                components.path = String(components.path.dropLast(suffix.count))
+                break
+            }
+            components.query = nil
+            components.fragment = nil
+            value = components.string ?? value
+        }
+
         while value.hasSuffix("/") {
             value.removeLast()
         }
