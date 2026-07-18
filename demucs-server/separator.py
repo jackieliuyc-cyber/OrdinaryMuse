@@ -9,7 +9,7 @@ import wave
 from demucs.pretrained import get_model
 from demucs.apply import apply_model
 from pathlib import Path
-from config import MODEL_NAME, DEVICE
+from config import MODEL_NAME, DEVICE, AAC_BITRATE
 
 logger = logging.getLogger("demucs-server")
 
@@ -206,6 +206,42 @@ class StemSeparator:
             wav_file.setsampwidth(2)
             wav_file.setframerate(samplerate)
             wav_file.writeframes(pcm.tobytes())
+
+    def encode_aac_stems(self, stems: dict) -> dict:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("AAC 音轨编码需要 ffmpeg。请先安装：brew install ffmpeg")
+
+        encoded = {}
+        for name, wav_path in stems.items():
+            m4a_path = str(Path(wav_path).with_suffix(".m4a"))
+            command = [
+                ffmpeg,
+                "-y",
+                "-v", "error",
+                "-i", wav_path,
+                "-vn",
+                "-c:a", "aac",
+                "-b:a", AAC_BITRATE,
+                "-movflags", "+faststart",
+                m4a_path,
+            ]
+            start = time.perf_counter()
+            logger.info("Encoding AAC stem: name=%s bitrate=%s", name, AAC_BITRATE)
+            completed = subprocess.run(command, capture_output=True, text=True)
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"AAC 编码失败 ({name}): {completed.stderr.strip() or completed.returncode}"
+                )
+            logger.info(
+                "AAC stem encoded: name=%s path=%s size=%d elapsed=%.2fs",
+                name,
+                m4a_path,
+                os.path.getsize(m4a_path),
+                time.perf_counter() - start,
+            )
+            encoded[name] = m4a_path
+        return encoded
 
     @property
     def source_names(self) -> list:

@@ -26,12 +26,20 @@ final class SeparationService: ObservableObject {
     @Published var serverURL: String = "http://12630gj35tf95.vicp.fun"
     let localURL = "http://127.0.0.1:8000"
     let lanURLPlaceholder = "http://192.168.1.100:8000"
+    private let session: URLSession
+
+    init() {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 600
+        configuration.timeoutIntervalForResource = 600
+        session = URLSession(configuration: configuration)
+    }
 
     func healthCheck() async -> Bool {
         guard let url = endpoint("/api/v1/health") else { return false }
         do {
             log("health check: \(url.absoluteString)")
-            let (_, response) = try await URLSession.shared.data(from: url)
+            let (_, response) = try await session.data(from: url)
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             log("health check response: \(statusCode)")
             return statusCode == 200
@@ -62,11 +70,7 @@ final class SeparationService: ObservableObject {
 
         statusText = "下载分轨..."
         progress = 0.8
-        let stemDataMap = try await downloadStems(taskId: taskId)
-
-        statusText = "保存文件..."
-        progress = 0.9
-        let urls = try saveStemFiles(stemDataMap)
+        let urls = try await downloadStems(taskId: taskId)
         log("saved stems: vocals=\(urls.vocals.path), drums=\(urls.drums.path), bass=\(urls.bass.path), other=\(urls.other.path)")
 
         progress = 1.0
@@ -85,7 +89,7 @@ final class SeparationService: ObservableObject {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 300
+        request.timeoutInterval = 600
 
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)",
@@ -98,7 +102,7 @@ final class SeparationService: ObservableObject {
         body.append(audioData)
         body.appendUTF8("\r\n--\(boundary)--\r\n")
 
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        let (data, response) = try await session.upload(for: request, from: body)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
         log("upload response: \(statusCode), body=\(Self.preview(data))")
         guard statusCode == 200 else {
@@ -119,7 +123,7 @@ final class SeparationService: ObservableObject {
 
         while true {
             try await Task.sleep(nanoseconds: 3_000_000_000)
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await session.data(from: url)
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             log("task \(taskId) poll response: \(statusCode), body=\(Self.preview(data))")
 
@@ -146,45 +150,71 @@ final class SeparationService: ObservableObject {
         }
     }
 
-    private func downloadStems(taskId: String) async throws -> [String: Data] {
-        var result: [String: Data] = [:]
+    private func downloadStems(taskId: String) async throws -> StemURLs {
+        var result: [String: URL] = [:]
         let stemNames = ["vocals", "drums", "bass", "other"]
-
-        for (i, name) in stemNames.enumerated() {
-            guard let url = endpoint("/api/v1/task/\(taskId)/stem/\(name)") else {
-                throw SeparationServiceError.serverUnavailable
-            }
-            let (data, response) = try await URLSession.shared.data(from: url)
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-            log("download stem \(name): \(statusCode), bytes=\(data.count)")
-            guard statusCode == 200 else {
-                log("download stem \(name) failed body: \(Self.preview(data))")
-                throw SeparationServiceError.downloadFailed
-            }
-            result[name] = data
-            progress = 0.8 + Double(i + 1) / Double(stemNames.count) * 0.1
-        }
-        return result
-    }
-
-    private func saveStemFiles(_ stemDataMap: [String: Data]) throws -> StemURLs {
-        let tmpDir = FileManager.default.temporaryDirectory
+        let progressPerStem = 0.1 / Double(stemNames.count)
         let sessionID = UUID().uuidString
 
-        func save(_ name: String) throws -> URL {
-            let url = tmpDir.appendingPathComponent("demucs-\(name)-\(sessionID).wav")
-            guard let data = stemDataMap[name] else {
-                log("missing downloaded stem data: \(name)")
-                throw SeparationServiceError.invalidResponse
+        for (i, name) in stemNames.enumerated() {
+            guard var components = endpointComponents("/api/v1/task/\(taskId)/stem/\(name)") else {
+                throw SeparationServiceError.serverUnavailable
             }
-            try data.write(to: url)
-            return url
+            components.queryItems = [URLQueryItem(name: "format", value: "m4a")]
+            guard let url = components.url else {
+                throw SeparationServiceError.serverUnavailable
+            }
+
+            let progressStart = 0.8 + Double(i) * progressPerStem
+            statusText = "下载 \(name)（\(i + 1)/\(stemNames.count)）..."
+            progress = progressStart
+            log("start download stem \(name): \(url.absoluteString)")
+
+            let delegate = StemDownloadProgressDelegate { [weak self] received, expected in
+                guard expected > 0 else { return }
+                let ratio = min(1, Double(received) / Double(expected))
+                Task { @MainActor [weak self] in
+                    self?.progress = progressStart + ratio * progressPerStem
+                    let receivedMB = Double(received) / 1_048_576
+                    let expectedMB = Double(expected) / 1_048_576
+                    self?.statusText = String(
+                        format: "下载 %@（%d/%d）%.1f/%.1f MB",
+                        name,
+                        i + 1,
+                        stemNames.count,
+                        receivedMB,
+                        expectedMB
+                    )
+                }
+            }
+
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 600
+            let (temporaryURL, response) = try await session.download(for: request, delegate: delegate)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: temporaryURL.path)[.size] as? NSNumber)?
+                .intValue ?? 0
+            log("download stem \(name): \(statusCode), bytes=\(bytes)")
+            guard statusCode == 200 else {
+                let errorData = (try? Data(contentsOf: temporaryURL)) ?? Data()
+                log("download stem \(name) failed body: \(Self.preview(errorData))")
+                throw SeparationServiceError.downloadFailed
+            }
+
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("demucs-\(name)-\(sessionID).m4a")
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: temporaryURL, to: destination)
+            result[name] = destination
+            progress = progressStart + progressPerStem
         }
 
-        let vocalsURL = try save("vocals")
-        let drumsURL = try save("drums")
-        let bassURL = try save("bass")
-        let otherURL = try save("other")
+        guard let vocalsURL = result["vocals"],
+              let drumsURL = result["drums"],
+              let bassURL = result["bass"],
+              let otherURL = result["other"] else {
+            throw SeparationServiceError.invalidResponse
+        }
 
         return StemURLs(vocals: vocalsURL, drums: drumsURL, bass: bassURL, other: otherURL)
     }
@@ -195,6 +225,10 @@ final class SeparationService: ObservableObject {
 
     private func endpoint(_ path: String) -> URL? {
         URL(string: "\(Self.normalizedBaseURL(serverURL))\(path)")
+    }
+
+    private func endpointComponents(_ path: String) -> URLComponents? {
+        URLComponents(string: "\(Self.normalizedBaseURL(serverURL))\(path)")
     }
 
     private static func normalizedBaseURL(_ rawValue: String) -> String {
@@ -224,6 +258,30 @@ final class SeparationService: ObservableObject {
         let clipped = Data(data.prefix(limit))
         return String(data: clipped, encoding: .utf8) ?? "<\(data.count) binary bytes>"
     }
+}
+
+private final class StemDownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
+    private let onProgress: @Sendable (Int64, Int64) -> Void
+
+    init(onProgress: @escaping @Sendable (Int64, Int64) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        onProgress(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {}
 }
 
 private extension Data {

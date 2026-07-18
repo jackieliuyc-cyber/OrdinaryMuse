@@ -40,7 +40,10 @@ curl http://127.0.0.1:8000/api/v1/health
 SERVER_PORT=8000 DEMUCS_DEVICE=auto ./start.sh
 DEMUCS_DEVICE=cpu ./start.sh
 DEMUCS_DEVICE=mps ./start.sh
+AAC_BITRATE=192k ./start.sh
 ```
+
+服务端会保留 Demucs 生成的 WAV，并额外编码为 AAC 256 kbps。App 默认下载体积更小的 M4A 音轨；可通过 `AAC_BITRATE` 调整码率。
 
 ### 3. 启动隧道
 
@@ -95,5 +98,5 @@ https://example.vicp.fun
 
 - 隧道 URL 免费版可能会变化，变更后需要重新填入 App。
 - 本机必须保持开机，`start_tunnel.sh` 终端不能关闭。
-- 音频上传和四轨 WAV 下载流量较大，免费隧道可能较慢。
+- 音频上传和四轨 M4A 下载仍受隧道带宽限制，免费隧道可能较慢。
 - 临时隧道适合开发测试；TestFlight 或正式上线建议使用云服务器 + Nginx。

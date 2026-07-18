@@ -128,11 +128,18 @@ def _process_task(task_id: str, input_path: str, output_dir: str):
         logger.info("Task started: task=%s input=%s output=%s", task_id, input_path, output_dir)
         start = time.time()
         stems = separator.separate(input_path, output_dir)
+        aac_stems = separator.encode_aac_stems(stems)
         elapsed = time.time() - start
         tasks[task_id]["status"] = "completed"
         tasks[task_id]["stems"] = {name: os.path.basename(path) for name, path in stems.items()}
+        tasks[task_id]["aac_stems"] = {name: os.path.basename(path) for name, path in aac_stems.items()}
         tasks[task_id]["processing_time"] = f"{elapsed:.2f}s"
-        logger.info("Task completed: task=%s elapsed=%.2fs stems=%s", task_id, elapsed, list(stems.keys()))
+        logger.info(
+            "Task completed: task=%s elapsed=%.2fs stems=%s download_format=m4a",
+            task_id,
+            elapsed,
+            list(stems.keys()),
+        )
     except Exception as e:
         logger.exception("Task failed: task=%s input=%s output=%s", task_id, input_path, output_dir)
         tasks[task_id]["status"] = "failed"
@@ -169,19 +176,25 @@ async def download_stems(task_id: str):
 
 
 @app.get("/api/v1/task/{task_id}/stem/{stem_name}", summary="Download single stem", tags=["Separation"])
-async def download_single_stem(task_id: str, stem_name: str):
+async def download_single_stem(
+    task_id: str,
+    stem_name: str,
+    format: str = Query(default="wav", pattern="^(wav|m4a)$"),
+):
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="Task not found")
     if tasks[task_id]["status"] != "completed":
         raise HTTPException(status_code=400, detail=f"Task status: {tasks[task_id]['status']}")
 
-    stem_path = OUTPUT_BASE / task_id / "stems" / f"{stem_name}.wav"
+    extension = "m4a" if format == "m4a" else "wav"
+    stem_path = OUTPUT_BASE / task_id / "stems" / f"{stem_name}.{extension}"
     if not stem_path.exists():
         available = list(tasks[task_id]["stems"].keys())
         raise HTTPException(status_code=404,
                             detail=f"Stem '{stem_name}' not found. Available: {available}")
 
-    return FileResponse(stem_path, media_type="audio/wav", filename=f"{stem_name}.wav")
+    media_type = "audio/mp4" if extension == "m4a" else "audio/wav"
+    return FileResponse(stem_path, media_type=media_type, filename=f"{stem_name}.{extension}")
 
 
 @app.get("/api/v1/health", summary="Health check", tags=["System"])
