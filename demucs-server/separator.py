@@ -237,7 +237,7 @@ class StemSeparator:
                 "AAC stem encoded: name=%s path=%s size=%d elapsed=%.2fs",
                 name,
                 m4a_path,
-                os.path.getsize(m4a_path),
+                Path(m4a_path).stat().st_size,
                 time.perf_counter() - start,
             )
             encoded[name] = m4a_path
