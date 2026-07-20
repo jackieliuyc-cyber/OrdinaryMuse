@@ -59,41 +59,61 @@ final class SeparationService: ObservableObject {
         statusText = "准备上传..."
         defer { isProcessing = false }
 
-        let audioData = try Data(contentsOf: audioURL)
-        let filename = audioURL.lastPathComponent
-        log("start separation: file=\(filename), size=\(audioData.count) bytes, server=\(serverURL)")
+        let totalStartedAt = Date()
+        var phase = "读取音频"
 
-        statusText = "上传中..."
-        progress = 0.1
-        let taskId: String
         do {
-            taskId = try await submitTask(audioData: audioData, filename: filename)
-        } catch where Self.isRetryable(error) {
-            throw SeparationServiceError.networkInterrupted
-        }
-        log("submitted task: \(taskId)")
+            let readStartedAt = Date()
+            let audioData = try Data(contentsOf: audioURL)
+            let filename = audioURL.lastPathComponent
+            log("start separation: file=\(filename), size=\(audioData.count) bytes, server=\(serverURL)")
+            log("timing read audio: \(Self.elapsed(since: readStartedAt))")
 
-        statusText = "模型分离中..."
-        progress = 0.2
-        do {
-            try await pollUntilComplete(taskId: taskId)
-        } catch where Self.isRetryable(error) {
-            throw SeparationServiceError.networkInterrupted
-        }
+            phase = "上传"
+            statusText = "上传中..."
+            progress = 0.1
+            let uploadStartedAt = Date()
+            let taskId: String
+            do {
+                taskId = try await submitTask(audioData: audioData, filename: filename)
+            } catch where Self.isRetryable(error) {
+                throw SeparationServiceError.networkInterrupted
+            }
+            log("submitted task: \(taskId)")
+            log("timing upload: \(Self.elapsed(since: uploadStartedAt))")
 
-        statusText = "下载分轨..."
-        progress = 0.8
-        let urls: StemURLs
-        do {
-            urls = try await downloadStems(taskId: taskId)
-        } catch where Self.isRetryable(error) {
-            throw SeparationServiceError.networkInterrupted
-        }
-        log("saved stems: vocals=\(urls.vocals.path), drums=\(urls.drums.path), bass=\(urls.bass.path), other=\(urls.other.path)")
+            phase = "模型分离"
+            statusText = "模型分离中..."
+            progress = 0.2
+            let processingStartedAt = Date()
+            do {
+                try await pollUntilComplete(taskId: taskId)
+            } catch where Self.isRetryable(error) {
+                throw SeparationServiceError.networkInterrupted
+            }
+            log("timing server processing: \(Self.elapsed(since: processingStartedAt))")
 
-        progress = 1.0
-        statusText = "分离完成"
-        return urls
+            phase = "下载分轨"
+            statusText = "下载分轨..."
+            progress = 0.8
+            let downloadStartedAt = Date()
+            let urls: StemURLs
+            do {
+                urls = try await downloadStems(taskId: taskId)
+            } catch where Self.isRetryable(error) {
+                throw SeparationServiceError.networkInterrupted
+            }
+            log("saved stems: vocals=\(urls.vocals.path), drums=\(urls.drums.path), bass=\(urls.bass.path), other=\(urls.other.path)")
+            log("timing download stems: \(Self.elapsed(since: downloadStartedAt))")
+
+            progress = 1.0
+            statusText = "分离完成"
+            log("timing complete: total=\(Self.elapsed(since: totalStartedAt))")
+            return urls
+        } catch {
+            log("timing failed: phase=\(phase), total=\(Self.elapsed(since: totalStartedAt)), error=\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func applyServerURL(_ rawValue: String) {
@@ -368,6 +388,10 @@ final class SeparationService: ObservableObject {
         guard !data.isEmpty else { return "<empty>" }
         let clipped = Data(data.prefix(limit))
         return String(data: clipped, encoding: .utf8) ?? "<\(data.count) binary bytes>"
+    }
+
+    private static func elapsed(since startedAt: Date) -> String {
+        String(format: "%.2fs", Date().timeIntervalSince(startedAt))
     }
 }
 
