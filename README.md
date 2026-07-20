@@ -67,6 +67,8 @@ ngrok config add-authtoken <your-token>
 花生壳:
 
 ```bash
+cd /Users/lyc/project/OrdinaryMuse/demucs-server
+source .venv/bin/activate
 ./start_tunnel.sh oray
 ```
 
