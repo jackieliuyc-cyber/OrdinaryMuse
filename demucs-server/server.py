@@ -12,7 +12,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -95,26 +95,42 @@ async def separate_sync(
 
 
 @app.post("/api/v1/separate/async", summary="Async separation", tags=["Separation"])
-async def separate_async(file: UploadFile = File(...)):
+async def separate_async(
+    file: UploadFile = File(...),
+    x_request_id: str = Header(default="", alias="X-Request-ID"),
+):
     validate_file(file)
 
-    task_id = str(uuid.uuid4())[:8]
+    task_id = x_request_id.strip() or str(uuid.uuid4())[:8]
+    if len(task_id) > 64 or any(not (char.isalnum() or char in "-_") for char in task_id):
+        raise HTTPException(status_code=400, detail="Invalid X-Request-ID")
+
+    if task_id in tasks:
+        logger.info("Reusing idempotent task: task=%s status=%s", task_id, tasks[task_id]["status"])
+        return {"task_id": task_id, "status": tasks[task_id]["status"], "reused": True}
+
     task_dir = OUTPUT_BASE / task_id
-    task_dir.mkdir(parents=True)
+    task_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Async separation request: task=%s filename=%s", task_id, file.filename)
 
-    input_path = task_dir / file.filename
-    content = await file.read()
-    logger.info("Async input saved: task=%s path=%s size=%d", task_id, input_path, len(content))
-    with open(input_path, "wb") as f:
-        f.write(content)
-
     tasks[task_id] = {
-        "status": "processing",
+        "status": "uploading",
         "filename": file.filename,
         "created_at": datetime.now().isoformat(),
         "stems": {},
     }
+
+    input_path = task_dir / file.filename
+    try:
+        content = await file.read()
+        logger.info("Async input saved: task=%s path=%s size=%d", task_id, input_path, len(content))
+        with open(input_path, "wb") as f:
+            f.write(content)
+        tasks[task_id]["status"] = "processing"
+    except Exception as error:
+        tasks[task_id]["status"] = "failed"
+        tasks[task_id]["error"] = f"{type(error).__name__}: {error}"
+        raise
 
     asyncio.get_event_loop().run_in_executor(
         None, _process_task, task_id, str(input_path), str(task_dir / "stems")

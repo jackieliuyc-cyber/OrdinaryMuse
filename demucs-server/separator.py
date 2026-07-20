@@ -6,10 +6,11 @@ import shutil
 import subprocess
 import time
 import wave
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from demucs.pretrained import get_model
 from demucs.apply import apply_model
 from pathlib import Path
-from config import MODEL_NAME, DEVICE, AAC_BITRATE
+from config import MODEL_NAME, DEVICE, AAC_BITRATE, AAC_MAX_WORKERS
 
 logger = logging.getLogger("demucs-server")
 
@@ -212,8 +213,7 @@ class StemSeparator:
         if not ffmpeg:
             raise RuntimeError("AAC 音轨编码需要 ffmpeg。请先安装：brew install ffmpeg")
 
-        encoded = {}
-        for name, wav_path in stems.items():
+        def encode_stem(name, wav_path):
             m4a_path = str(Path(wav_path).with_suffix(".m4a"))
             command = [
                 ffmpeg,
@@ -240,8 +240,28 @@ class StemSeparator:
                 Path(m4a_path).stat().st_size,
                 time.perf_counter() - start,
             )
-            encoded[name] = m4a_path
-        return encoded
+            return name, m4a_path
+
+        worker_count = min(AAC_MAX_WORKERS, len(stems))
+        batch_start = time.perf_counter()
+        logger.info(
+            "Encoding AAC stems in parallel: count=%d workers=%d bitrate=%s",
+            len(stems),
+            worker_count,
+            AAC_BITRATE,
+        )
+        encoded = {}
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="aac-encode") as executor:
+            futures = [
+                executor.submit(encode_stem, name, wav_path)
+                for name, wav_path in stems.items()
+            ]
+            for future in as_completed(futures):
+                name, m4a_path = future.result()
+                encoded[name] = m4a_path
+
+        logger.info("All AAC stems encoded: elapsed=%.2fs", time.perf_counter() - batch_start)
+        return {name: encoded[name] for name in stems}
 
     @property
     def source_names(self) -> list:

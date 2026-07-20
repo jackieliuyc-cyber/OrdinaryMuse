@@ -2,6 +2,7 @@ import Foundation
 
 enum SeparationServiceError: LocalizedError {
     case serverUnavailable
+    case networkInterrupted
     case uploadFailed
     case processingFailed(String)
     case downloadFailed
@@ -10,6 +11,7 @@ enum SeparationServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .serverUnavailable: return "无法连接到分离服务器"
+        case .networkInterrupted: return "网络连接多次中断，请稍后重试"
         case .uploadFailed: return "上传文件失败"
         case .processingFailed(let msg): return "处理失败: \(msg)"
         case .downloadFailed: return "下载分轨文件失败"
@@ -20,6 +22,8 @@ enum SeparationServiceError: LocalizedError {
 
 @MainActor
 final class SeparationService: ObservableObject {
+    private static let retryableStatusCodes = [408, 429, 502, 503, 504]
+
     @Published var progress: Double = 0
     @Published var isProcessing = false
     @Published var statusText = ""
@@ -61,16 +65,30 @@ final class SeparationService: ObservableObject {
 
         statusText = "上传中..."
         progress = 0.1
-        let taskId = try await submitTask(audioData: audioData, filename: filename)
+        let taskId: String
+        do {
+            taskId = try await submitTask(audioData: audioData, filename: filename)
+        } catch where Self.isRetryable(error) {
+            throw SeparationServiceError.networkInterrupted
+        }
         log("submitted task: \(taskId)")
 
         statusText = "模型分离中..."
         progress = 0.2
-        try await pollUntilComplete(taskId: taskId)
+        do {
+            try await pollUntilComplete(taskId: taskId)
+        } catch where Self.isRetryable(error) {
+            throw SeparationServiceError.networkInterrupted
+        }
 
         statusText = "下载分轨..."
         progress = 0.8
-        let urls = try await downloadStems(taskId: taskId)
+        let urls: StemURLs
+        do {
+            urls = try await downloadStems(taskId: taskId)
+        } catch where Self.isRetryable(error) {
+            throw SeparationServiceError.networkInterrupted
+        }
         log("saved stems: vocals=\(urls.vocals.path), drums=\(urls.drums.path), bass=\(urls.bass.path), other=\(urls.other.path)")
 
         progress = 1.0
@@ -87,9 +105,11 @@ final class SeparationService: ObservableObject {
             throw SeparationServiceError.serverUnavailable
         }
 
+        let requestID = UUID().uuidString.lowercased()
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 600
+        request.setValue(requestID, forHTTPHeaderField: "X-Request-ID")
 
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)",
@@ -102,18 +122,39 @@ final class SeparationService: ObservableObject {
         body.append(audioData)
         body.appendUTF8("\r\n--\(boundary)--\r\n")
 
-        let (data, response) = try await session.upload(for: request, from: body)
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-        log("upload response: \(statusCode), body=\(Self.preview(data))")
-        guard statusCode == 200 else {
-            throw SeparationServiceError.uploadFailed
+        for attempt in 1...3 {
+            do {
+                let (data, response) = try await session.upload(for: request, from: body)
+                try Self.validateRetryableStatus(response)
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                log("upload response: \(statusCode), body=\(Self.preview(data))")
+                guard statusCode == 200 else {
+                    throw SeparationServiceError.uploadFailed
+                }
+
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let taskId = json["task_id"] as? String else {
+                    throw SeparationServiceError.invalidResponse
+                }
+                return taskId
+            } catch {
+                guard Self.isRetryable(error) else { throw error }
+
+                if await serverHasTask(requestID) {
+                    log("upload response lost, recovered task: \(requestID)")
+                    statusText = "服务端已接收，开始模型分离..."
+                    return requestID
+                }
+
+                guard attempt < 3 else { throw error }
+                let nextAttempt = attempt + 1
+                log("upload failed: \(error.localizedDescription), retry=\(nextAttempt)/3")
+                statusText = "上传连接中断，正在重试（\(nextAttempt)/3）..."
+                try await Task.sleep(nanoseconds: UInt64(nextAttempt - 1) * 2_000_000_000)
+            }
         }
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let taskId = json["task_id"] as? String else {
-            throw SeparationServiceError.invalidResponse
-        }
-        return taskId
+        throw SeparationServiceError.uploadFailed
     }
 
     private func pollUntilComplete(taskId: String) async throws {
@@ -123,7 +164,11 @@ final class SeparationService: ObservableObject {
 
         while true {
             try await Task.sleep(nanoseconds: 3_000_000_000)
-            let (data, response) = try await session.data(from: url)
+            let (data, response) = try await retryingNetworkRequest(phase: "查询进度") {
+                let result = try await self.session.data(from: url)
+                try Self.validateRetryableStatus(result.1)
+                return result
+            }
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             log("task \(taskId) poll response: \(statusCode), body=\(Self.preview(data))")
 
@@ -170,27 +215,30 @@ final class SeparationService: ObservableObject {
             progress = progressStart
             log("start download stem \(name): \(url.absoluteString)")
 
-            let delegate = StemDownloadProgressDelegate { [weak self] received, expected in
-                guard expected > 0 else { return }
-                let ratio = min(1, Double(received) / Double(expected))
-                Task { @MainActor [weak self] in
-                    self?.progress = progressStart + ratio * progressPerStem
-                    let receivedMB = Double(received) / 1_048_576
-                    let expectedMB = Double(expected) / 1_048_576
-                    self?.statusText = String(
-                        format: "下载 %@（%d/%d）%.1f/%.1f MB",
-                        name,
-                        i + 1,
-                        stemNames.count,
-                        receivedMB,
-                        expectedMB
-                    )
-                }
-            }
-
             var request = URLRequest(url: url)
             request.timeoutInterval = 600
-            let (temporaryURL, response) = try await session.download(for: request, delegate: delegate)
+            let (temporaryURL, response) = try await retryingNetworkRequest(phase: "下载 \(name)") {
+                let delegate = StemDownloadProgressDelegate { [weak self] received, expected in
+                    guard expected > 0 else { return }
+                    let ratio = min(1, Double(received) / Double(expected))
+                    Task { @MainActor [weak self] in
+                        self?.progress = progressStart + ratio * progressPerStem
+                        let receivedMB = Double(received) / 1_048_576
+                        let expectedMB = Double(expected) / 1_048_576
+                        self?.statusText = String(
+                            format: "下载 %@（%d/%d）%.1f/%.1f MB",
+                            name,
+                            i + 1,
+                            stemNames.count,
+                            receivedMB,
+                            expectedMB
+                        )
+                    }
+                }
+                let result = try await self.session.download(for: request, delegate: delegate)
+                try Self.validateRetryableStatus(result.1)
+                return result
+            }
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let bytes = (try? FileManager.default.attributesOfItem(atPath: temporaryURL.path)[.size] as? NSNumber)?
                 .intValue ?? 0
@@ -231,6 +279,69 @@ final class SeparationService: ObservableObject {
         URLComponents(string: "\(Self.normalizedBaseURL(serverURL))\(path)")
     }
 
+    private func serverHasTask(_ taskID: String) async -> Bool {
+        guard let url = endpoint("/api/v1/task/\(taskID)") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+
+        do {
+            let (_, response) = try await session.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            log("task recovery check failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func retryingNetworkRequest<T>(
+        phase: String,
+        maxAttempts: Int = 3,
+        operation: () async throws -> T
+    ) async throws -> T {
+        var attempt = 1
+
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                guard attempt < maxAttempts, Self.isRetryable(error) else {
+                    throw error
+                }
+
+                attempt += 1
+                let delay = UInt64(attempt - 1) * 2
+                log("\(phase) failed with retryable error: \(error.localizedDescription), retry=\(attempt)/\(maxAttempts)")
+                statusText = "\(phase)连接中断，正在重试（\(attempt)/\(maxAttempts)）..."
+                try await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            }
+        }
+    }
+
+    private static func validateRetryableStatus(_ response: URLResponse) throws {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        if retryableStatusCodes.contains(statusCode) {
+            throw TransientNetworkError.httpStatus(statusCode)
+        }
+    }
+
+    private static func isRetryable(_ error: Error) -> Bool {
+        if error is TransientNetworkError {
+            return true
+        }
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        return [
+            .timedOut,
+            .cannotFindHost,
+            .cannotConnectToHost,
+            .networkConnectionLost,
+            .dnsLookupFailed,
+            .notConnectedToInternet,
+            .secureConnectionFailed,
+        ].contains(urlError.code)
+    }
+
     private static func normalizedBaseURL(_ rawValue: String) -> String {
         var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -257,6 +368,17 @@ final class SeparationService: ObservableObject {
         guard !data.isEmpty else { return "<empty>" }
         let clipped = Data(data.prefix(limit))
         return String(data: clipped, encoding: .utf8) ?? "<\(data.count) binary bytes>"
+    }
+}
+
+private enum TransientNetworkError: LocalizedError {
+    case httpStatus(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .httpStatus(let statusCode):
+            return "服务器暂时不可用（HTTP \(statusCode)）"
+        }
     }
 }
 

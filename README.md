@@ -41,9 +41,10 @@ SERVER_PORT=8000 DEMUCS_DEVICE=auto ./start.sh
 DEMUCS_DEVICE=cpu ./start.sh
 DEMUCS_DEVICE=mps ./start.sh
 AAC_BITRATE=192k ./start.sh
+AAC_MAX_WORKERS=2 ./start.sh
 ```
 
-服务端会保留 Demucs 生成的 WAV，并额外编码为 AAC 256 kbps。App 默认下载体积更小的 M4A 音轨；可通过 `AAC_BITRATE` 调整码率。
+服务端会保留 Demucs 生成的 WAV，并额外编码为 AAC 256 kbps。App 默认下载体积更小的 M4A 音轨；可通过 `AAC_BITRATE` 调整码率。默认同时编码 2 条音轨，可通过 `AAC_MAX_WORKERS` 调整并发数。
 
 ### 3. 启动隧道
 
