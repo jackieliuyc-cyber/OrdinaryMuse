@@ -32,6 +32,11 @@ private struct StemTrack: Identifiable {
     var audioURL: URL?
 }
 
+private struct ExportItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct ContentView: View {
     @StateObject private var extractor = AudioExtractionManager()
     @StateObject private var separator = StemSeparationManager()
@@ -55,9 +60,9 @@ struct ContentView: View {
     @State private var stemPlayers: [AVAudioPlayerNode] = []
     @State private var stemBuffers: [AVAudioPCMBuffer] = []
     @State private var mixFramePosition: Int = 0
-    @State private var showExportSheet = false
-    @State private var exportURL: URL?
+    @State private var exportItem: ExportItem?
     @State private var showExportError = false
+    @State private var exportErrorMessage = "无法生成混音文件，请重新分离后再试"
 
     @State private var recentJobs: [RecentJob] = [
         .init(title: "Live Rooftop Clip Audio Extract", subtitle: "Queued", progress: 0, highlighted: true),
@@ -123,16 +128,13 @@ struct ContentView: View {
             stopPlayback()
             teardownMixEngine()
         }
-        .sheet(isPresented: $showExportSheet) {
-            if let url = exportURL {
-                ShareSheet(url: url)
-                    .presentationDetents([.medium])
-            }
+        .sheet(item: $exportItem) { item in
+            ShareSheet(url: item.url)
         }
-        .alert("导出混音失败", isPresented: $showExportError) {
+        .alert("导出失败", isPresented: $showExportError) {
             Button("确定", role: .cancel) {}
         } message: {
-            Text("无法生成混音文件，请重新分离后再试")
+            Text(exportErrorMessage)
         }
     }
 
@@ -224,8 +226,7 @@ struct ContentView: View {
                 if let url = extractedAudioURL {
                     HStack(spacing: 14) {
                         Button {
-                            exportURL = url
-                            showExportSheet = true
+                            exportItem = ExportItem(url: url)
                         } label: {
                             MuseButtonLabel(title: "分享音频", systemImage: "square.and.arrow.up", foreground: .black)
                         }
@@ -466,9 +467,9 @@ struct ContentView: View {
                 if separationDone {
                     Button {
                         if let url = exportMixedAudio() {
-                            exportURL = url
-                            showExportSheet = true
+                            exportItem = ExportItem(url: url)
                         } else {
+                            exportErrorMessage = "无法生成混音文件，请重新分离后再试"
                             showExportError = true
                         }
                     } label: {
@@ -488,7 +489,8 @@ struct ContentView: View {
                         StemFileRow(
                             title: "\(splitTitle) - \(stem.title)",
                             subtitle: "M4A · \(formatTime(audioDuration))",
-                            active: stem.audioURL != nil
+                            active: stem.audioURL != nil,
+                            onExport: { exportStem(stem) }
                         )
                     }
                 }
@@ -886,6 +888,22 @@ struct ContentView: View {
     }
 
     // MARK: - Export
+
+    private func exportStem(_ stem: StemTrack) {
+        guard let url = stem.audioURL else {
+            exportErrorMessage = "该分轨尚未生成，请完成分离后再导出"
+            showExportError = true
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            exportErrorMessage = "找不到 \(stem.title) 分轨文件，请重新分离后再试"
+            showExportError = true
+            return
+        }
+
+        exportItem = ExportItem(url: url)
+    }
 
     private func exportMixedAudio() -> URL? {
         var buffers = stemBuffers
@@ -1406,6 +1424,7 @@ private struct StemFileRow: View {
     let title: String
     let subtitle: String
     let active: Bool
+    let onExport: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1425,9 +1444,17 @@ private struct StemFileRow: View {
 
             Spacer()
 
-            Image(systemName: "arrow.down.to.line")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Color.museText)
+            Button(action: onExport) {
+                Image(systemName: "arrow.down.to.line")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(active ? Color.museText : Color.museMuted)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!active)
+            .accessibilityLabel("导出\(title)")
+            .accessibilityHint("打开系统分享面板以保存或发送该分轨音频")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
