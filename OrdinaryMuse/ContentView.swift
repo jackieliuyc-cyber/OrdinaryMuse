@@ -43,7 +43,6 @@ struct ContentView: View {
     @StateObject private var demucsService = SeparationService()
     @State private var selectedTab: MuseTab = .extract
     @State private var separationMode: SeparationMode = .local
-    @State private var showServerSettings = false
     @State private var showVideoImporter = false
     @State private var showAudioImporter = false
     @State private var splitTitle = "等待上传音频"
@@ -271,95 +270,31 @@ struct ContentView: View {
             .padding(.horizontal, 4)
 
             if separationMode == .demucs {
-                GlassPanel {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Demucs 服务器")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(Color.museText)
-                            Text("基于 Demucs v4 模型，分离质量更高")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color.museMuted)
+                VStack(spacing: 8) {
+                    Button {
+                        Task {
+                            let ok = await demucsService.healthCheck()
+                            demucsService.statusText = ok ? "服务器连接正常" : "无法连接服务器"
                         }
-                        Spacer()
-                        Button {
-                            showServerSettings.toggle()
-                        } label: {
-                            Image(systemName: "gearshape")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Color.museText)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("测试连接")
+                                .font(.system(size: 12, weight: .bold))
                         }
+                        .foregroundStyle(Color.museText)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
                     }
 
-                    if showServerSettings {
-                        VStack(spacing: 8) {
-                            HStack {
-                                Text("服务器地址")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(Color.museMuted)
-                                Spacer()
-                            }
-                            TextField("http://12630gj35tf95.vicp.fun", text: $demucsService.serverURL)
-                                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Color.museText)
-                                .padding(10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(Color.white.opacity(0.06))
-                                )
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                                }
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-
-                            HStack(spacing: 8) {
-                                ServerPresetButton(title: "本机", icon: "desktopcomputer") {
-                                    demucsService.applyServerURL(demucsService.localURL)
-                                }
-
-                                ServerPresetButton(title: "局域网", icon: "wifi") {
-                                    demucsService.applyServerURL(demucsService.lanURLPlaceholder)
-                                }
-
-                                ServerPresetButton(title: "粘贴隧道", icon: "link") {
-                                    if let value = UIPasteboard.general.string, !value.isEmpty {
-                                        demucsService.applyServerURL(value)
-                                    }
-                                }
-                            }
-
-                            Button {
-                                Task {
-                                    demucsService.applyServerURL(demucsService.serverURL)
-                                    let ok = await demucsService.healthCheck()
-                                    demucsService.statusText = ok ? "服务器连接正常" : "无法连接服务器"
-                                }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "antenna.radiowaves.left.and.right")
-                                        .font(.system(size: 12, weight: .semibold))
-                                    Text("测试连接")
-                                        .font(.system(size: 12, weight: .bold))
-                                }
-                                .foregroundStyle(Color.museText)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(
-                                    Capsule().fill(Color.white.opacity(0.08))
-                                )
-                            }
-
-                            if !demucsService.statusText.isEmpty {
-                                Text(demucsService.statusText)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(
-                                        demucsService.statusText.contains("正常") ? Color.museMint : Color.museGold
-                                    )
-                            }
-                        }
-                        .padding(.top, 4)
+                    if !demucsService.statusText.isEmpty {
+                        Text(demucsService.statusText)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(
+                                demucsService.statusText.contains("正常") ? Color.museMint : Color.museGold
+                            )
                     }
                 }
             }
@@ -1175,31 +1110,6 @@ private struct MuseButtonLabel: View {
         }
         .foregroundStyle(foreground)
         .frame(maxWidth: .infinity)
-    }
-}
-
-private struct ServerPresetButton: View {
-    let title: String
-    let icon: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 11, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-            }
-            .foregroundStyle(Color.museText)
-            .frame(maxWidth: .infinity, minHeight: 32)
-            .background(Capsule().fill(Color.white.opacity(0.07)))
-            .overlay {
-                Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1)
-            }
-        }
     }
 }
 
