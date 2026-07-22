@@ -487,7 +487,7 @@ struct ContentView: View {
 
                     ForEach(stems) { stem in
                         StemFileRow(
-                            title: "\(splitTitle) - \(stem.title)",
+                            title: "\(stem.title) - \(splitTitle)",
                             subtitle: "M4A · \(formatTime(audioDuration))",
                             active: stem.audioURL != nil,
                             onExport: { exportStem(stem) }
