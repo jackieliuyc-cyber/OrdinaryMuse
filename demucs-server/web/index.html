@@ -21,23 +21,27 @@
         <div><p class="eyebrow">LESS NOISE. MORE MUSIC.</p><h1>听见音乐的<br><span>每一种可能。</span></h1><p class="intro">分离人声、鼓、贝斯与其他乐器。<br>把一首歌，变成你的下一次灵感。</p></div>
         <div class="sound-art" aria-hidden="true"><div class="orbit"></div><div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="art-caption">ONE SONG. FOUR PERSPECTIVES.</span></div>
       </section>
+      <div class="mode-switch" role="group" aria-label="处理方式"><button id="mode-separation" type="button" aria-pressed="true">音轨分离</button><button id="mode-extraction" type="button" aria-pressed="false">视频提音</button></div>
       <div class="workspace">
         <section class="panel upload-panel" aria-labelledby="upload-title">
-          <div class="section-heading"><span class="step">01</span><h2 id="upload-title">放入你的音乐</h2><span class="small-tag">音轨分离</span></div>
+          <div class="section-heading"><span class="step">01</span><h2 id="upload-title">放入你的音乐</h2><span class="small-tag" id="mode-tag">音轨分离</span></div>
+          <label class="format-control" id="format-control" hidden>导出格式 <select id="export-format"><option value="m4a">M4A · AAC 高音质</option><option value="wav">WAV · 24-bit PCM</option><option value="aiff">AIFF · 24-bit PCM</option><option value="caf">CAF · 32-bit Float PCM</option></select></label>
           <label class="dropzone" id="dropzone" for="file"><input id="file" type="file" accept=".mp3,.wav,.flac,.ogg,.m4a,.aac,.wma"><span class="upload-icon" aria-hidden="true">↑</span><strong id="file-title">选择音频，或拖放到这里</strong><span id="file-detail">MP3 / WAV / FLAC / M4A 等 · 最大 50 MB</span><span class="choose">选择文件</span></label>
           <button id="start" class="primary" type="button" disabled>开始分离 <span aria-hidden="true">↗</span></button>
-          <p class="hint">音频将在服务端处理。上传时请保持页面打开。</p>
+          <p class="hint" id="upload-hint">音频将在服务端处理。上传时请保持页面打开。</p>
           <div id="status-box" class="status-box" hidden aria-live="polite" role="status"><div class="status-line"><strong id="status-title"></strong><span id="upload-percent"></span></div><progress id="progress" max="100" value="0" aria-label="上传进度"></progress><p id="status-detail"></p><button id="retry" class="text-button" type="button" hidden>重新查询任务</button></div>
         </section>
         <section class="panel result-panel" aria-labelledby="result-title">
           <div class="section-heading"><span class="step">02</span><h2 id="result-title">探索独立音轨</h2><span id="result-count" class="small-tag">4 STEMS</span></div>
           <div id="empty-results" class="empty-results"><div class="track-preview"><span>◉</span><div><strong>人声</strong><small>VOCALS</small></div><b>━━━━ ━━ ━━━</b></div><div class="track-preview"><span>◈</span><div><strong>鼓</strong><small>DRUMS</small></div><b>━━ ━━━ ━━━━</b></div><div class="track-preview"><span>≋</span><div><strong>贝斯</strong><small>BASS</small></div><b>━━━━━ ━━ ━━</b></div><div class="track-preview"><span>✧</span><div><strong>其他乐器</strong><small>OTHER</small></div><b>━━━ ━━━━ ━━</b></div><p>分离完成后，在这里试听和下载</p></div>
           <div id="results" hidden><p id="result-filename" class="result-filename"></p><div id="tracks"></div><a id="download-all" class="secondary" download>下载全部 WAV 音轨 <span aria-hidden="true">↓</span></a><p class="hint">M4A 适合快速试听；WAV 适合后期制作。</p></div>
+          <div id="extraction-results" hidden><p id="extraction-filename" class="result-filename"></p><audio id="extraction-player" controls preload="none" aria-label="试听提取音频"></audio><a id="download-audio" class="secondary" download>下载提取音频 ↓</a><button id="separate-extracted" class="primary" type="button">继续分离四条音轨 ↗</button><p class="hint">直接使用提取的音频，无需下载后重新上传。试听使用 M4A，下载保留所选格式。</p></div>
+          <p id="extraction-empty" class="muted" hidden>上传视频后，在这里试听、下载音频，或继续分离人声与乐器。</p>
         </section>
       </div>
       <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><h2 id="history-title">最近的创作</h2><span class="muted">此浏览器的任务记录</span></div><p id="history-empty" class="muted">还没有任务，从一首喜欢的歌开始。</p><ul id="history"></ul></section>
     </main>
-    <footer><span>Ordinary Muse <span class="footer-dot">/</span> 为每一次灵感而作</span><span id="retention">分离完成后保留 24 小时，过期自动清理，请及时下载</span></footer>
+    <footer><span>Ordinary Muse <span class="footer-dot">/</span> 为每一次灵感而作</span><span id="retention">提取或分离完成后保留 24 小时，过期自动清理，请及时下载</span></footer>
   </div>
 </body>
 </html>

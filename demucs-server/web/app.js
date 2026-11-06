@@ -1,11 +1,42 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const labels = { uploading: "正在接收", queued: "等待分离", processing: "正在分离", completed: "分离完成", failed: "分离失败", expired: "任务已失效", unknown: "待确认" };
+const labels = { uploading: "正在接收", queued: "排队中", processing: "处理中", completed: "已完成", failed: "处理失败", expired: "任务已失效", unknown: "待确认" };
 const stemLabels = { vocals: "人声", drums: "鼓", bass: "贝斯", other: "其他乐器" };
 const storageKey = "ordinary-muse-tasks-v1";
 const localPreview = location.protocol === "file:";
 let config = { max_file_size_mb: 50, allowed_extensions: [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"] };
 let selectedFile = null, uploading = false, activeId = null, pollTimer = null, generation = 0;
+let mode = "separation", extractionSource = null;
+const videoDefaults = [".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"];
+
+function fileRules() {
+  return mode === "extraction" ? { extensions: config.video_extensions || videoDefaults, size: config.max_video_size_mb || 500 } : { extensions: config.allowed_extensions, size: config.max_file_size_mb };
+}
+function resetResults() {
+  $("results").hidden = true; $("extraction-results").hidden = true;
+  $("empty-results").hidden = mode === "extraction"; $("extraction-empty").hidden = mode !== "extraction";
+  $("tracks").replaceChildren(); $("extraction-player").pause();
+  $("extraction-player").removeAttribute("src"); $("extraction-player").load(); extractionSource = null;
+}
+function setMode(value) {
+  if (uploading) return;
+  mode = value; selectedFile = null; $("file").value = "";
+  clearTimeout(pollTimer); generation++; activeId = null;
+  const video = mode === "extraction", rules = fileRules();
+  $("mode-separation").setAttribute("aria-pressed", String(!video));
+  $("mode-extraction").setAttribute("aria-pressed", String(video));
+  $("format-control").hidden = !video; $("file").accept = rules.extensions.join(",");
+  $("upload-title").textContent = video ? "从视频中提取声音" : "放入你的音乐";
+  $("mode-tag").textContent = video ? "视频提音" : "音轨分离";
+  $("file-title").textContent = video ? "选择视频，或拖放到这里" : "选择音频，或拖放到这里";
+  $("file-detail").textContent = `${rules.extensions.map(x => x.slice(1).toUpperCase()).join(" / ")} · 最大 ${rules.size} MB`;
+  $("upload-hint").textContent = video ? "视频上传至 Mac 处理，提取第一条音轨。上传时请保持页面打开。" : "音频将在服务端处理。上传时请保持页面打开。";
+  $("result-title").textContent = video ? "你的提取音频" : "探索独立音轨";
+  $("result-count").textContent = video ? "AUDIO" : "4 STEMS";
+  $("start").textContent = video ? "开始提取 ↗" : "开始分离 ↗";
+  $("start").disabled = true; $("status-box").hidden = true;
+  resetResults(); renderHistory();
+}
 let records = [];
 try {
   const saved = JSON.parse(localStorage.getItem(storageKey) || "[]");
@@ -26,7 +57,7 @@ function renderHistory() {
     button.classList.toggle("active", record.id === activeId);
     const name = document.createElement("span"), state = document.createElement("small");
     name.textContent = record.name || "音频任务";
-    state.textContent = labels[record.status] || "点击查看";
+    state.textContent = `${record.kind === "extraction" ? "提音" : "分轨"} · ${labels[record.status] || "点击查看"}`;
     button.append(name, state); button.addEventListener("click", () => activate(record.id));
     li.append(button); $("history").append(li);
   }
@@ -42,15 +73,19 @@ function setUploading(value) {
   $("file").disabled = value;
   $("dropzone").classList.toggle("busy", value);
   $("start").disabled = value || !selectedFile;
-  $("start").textContent = value ? "正在上传…" : "开始分离 ↗";
+  $("start").textContent = value ? "正在提交…" : mode === "extraction" ? "开始提取 ↗" : "开始分离 ↗";
+  for (const id of ["mode-separation", "mode-extraction", "export-format", "separate-extracted"]) $(id).disabled = value;
   renderHistory();
 }
-async function request(path) {
+async function request(path, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(path, { signal: controller.signal, cache: "no-store" });
-    if (!response.ok) { const error = new Error(`请求失败 (${response.status})`); error.status = response.status; throw error; }
+    const response = await fetch(path, { ...options, signal: controller.signal, cache: "no-store" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      const error = new Error(typeof data.detail === "string" ? data.detail : `请求失败 (${response.status})`); error.status = response.status; throw error;
+    }
     return await response.json();
   } finally { clearTimeout(timeout); }
 }
@@ -73,10 +108,11 @@ async function checkConnection() {
 function selectFile(file) {
   if (!file || uploading || localPreview) return;
   const extension = "." + file.name.split(".").pop().toLowerCase();
-  if (!config.allowed_extensions.includes(extension) || !file.size || file.size > config.max_file_size_mb * 1024 * 1024) {
+  const rules = fileRules();
+  if (!rules.extensions.includes(extension) || !file.size || file.size > rules.size * 1024 * 1024) {
     selectedFile = null; $("start").disabled = true; $("file").value = "";
-    $("file-title").textContent = "请选择支持的音频文件";
-    status("文件无法上传", `请选择非空音频文件，支持 ${config.allowed_extensions.join(" / ")}，最大 ${config.max_file_size_mb} MB。`, true);
+    $("file-title").textContent = "请选择支持的文件";
+    status("文件无法上传", `请选择非空文件，支持 ${rules.extensions.join(" / ")}，最大 ${rules.size} MB。`, true);
     return;
   }
   selectedFile = file;
@@ -88,14 +124,14 @@ function upload(file, id) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest(), form = new FormData();
     form.append("file", file);
-    xhr.open("POST", "/api/v1/separate/async");
+    xhr.open("POST", mode === "extraction" ? `/api/v1/extract/async?format=${encodeURIComponent($("export-format").value)}` : "/api/v1/separate/async");
     xhr.setRequestHeader("X-Request-ID", id);
     xhr.timeout = 600000;
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
       const percent = Math.round(event.loaded / event.total * 100);
       $("progress").value = percent; $("upload-percent").textContent = `${percent}%`;
-      if (percent === 100) status("正在确认上传", "音频已发送，等待服务端确认，请勿重复提交。");
+      if (percent === 100) status("正在确认上传", "文件已发送，等待服务端确认，请勿重复提交。");
     };
     xhr.onload = () => {
       let data;
@@ -118,11 +154,10 @@ async function submit() {
   clearTimeout(pollTimer); generation++;
   const id = newId(), file = selectedFile;
   activeId = id; $("retry").hidden = true;
-  $("results").hidden = true; $("empty-results").hidden = false;
-  $("tracks").replaceChildren();
+  resetResults();
   $("progress").hidden = false; $("progress").value = 0; $("upload-percent").textContent = "0%";
-  remember({ id, name: file.name, status: "uploading" });
-  setUploading(true); status("正在上传音频", "上传时请保持页面打开，上传完成后可稍后回来查看结果。");
+  remember({ id, name: file.name, status: "uploading", kind: mode });
+  setUploading(true); status(mode === "extraction" ? "正在上传视频" : "正在上传音频", "上传时请保持页面打开，上传完成后可稍后回来查看结果。");
   let accepted = false;
   try {
     const task = await upload(file, id);
@@ -146,31 +181,32 @@ function activate(id) {
   if (localPreview) { checkConnection(); return; }
   if (uploading) return;
   clearTimeout(pollTimer); generation++; activeId = id;
-  $("retry").hidden = true; $("results").hidden = true; $("empty-results").hidden = false;
-  $("tracks").replaceChildren(); $("progress").hidden = true; $("upload-percent").textContent = "";
-  status("正在获取任务", "正在恢复这首音频的处理状态…"); renderHistory(); poll(id, generation);
+  $("retry").hidden = true; resetResults();
+  $("progress").hidden = true; $("upload-percent").textContent = "";
+  status("正在获取任务", "正在恢复文件的处理状态…"); renderHistory(); poll(id, generation);
 }
 async function poll(id, version) {
   if (version !== generation) return;
   try {
     const task = await request(`/api/v1/task/${encodeURIComponent(id)}`);
     if (version !== generation) return;
-    remember({ id, name: task.filename, status: task.status });
+    remember({ id, name: task.filename, status: task.status, kind: task.kind || "separation" });
     $("retry").hidden = true;
     if (task.status === "completed") {
       const deadline = task.expires_at ? `请在 ${new Date(task.expires_at).toLocaleString("zh-CN")} 前下载。` : "";
-      status("分离完成", `四种声音，新的灵感。${task.processing_time ? `处理用时 ${task.processing_time}。` : ""}${deadline}`);
-      showResults(id, task); return;
+      status(task.kind === "extraction" ? "音频提取完成" : "分离完成", `${task.processing_time ? `处理用时 ${task.processing_time}。` : ""}${deadline}`);
+      if (task.kind === "extraction") showExtraction(id, task); else showResults(id, task);
+      return;
     }
     if (task.status === "failed") {
-      status("分离失败", task.error || "请换一个音频文件重试。", true); return;
+      status("处理失败", task.error || "请换一个文件重试。", true); return;
     }
-    status(labels[task.status] || "正在处理", task.status === "queued" ? "前面的音频正在处理，轮到你时会自动开始。" : "服务端正在处理音频。可以离开页面，稍后从最近的创作中查看。");
+    status(task.status === "processing" && task.kind === "extraction" ? "正在提取音频" : labels[task.status] || "正在处理", task.status === "queued" ? "前面的任务正在处理，轮到你时会自动开始。" : "服务端正在处理文件。可以离开页面，稍后从最近的创作中查看。");
     pollTimer = setTimeout(() => poll(id, version), 3000);
   } catch (error) {
     if (version !== generation) return;
     if (error.status === 404 || error.status === 410) {
-      status(error.status === 410 ? "结果已过期" : "任务不存在", error.status === 410 ? "分离结果已超过保留时间，无法继续试听或下载。请重新上传音频。" : "未找到此任务，可能尚未提交成功，或来自升级前未保存的记录。请重新上传音频。", true);
+      status(error.status === 410 ? "结果已过期" : "任务不存在", error.status === 410 ? "结果已超过保留时间，无法继续试听或下载。请重新提交文件。" : "未找到此任务，可能尚未提交成功，或来自升级前未保存的记录。请重新提交文件。", true);
       remember({ id, status: "expired" }); return;
     }
     status("暂时无法查询进度", "服务端任务可能仍在继续。请检查网络与服务连接，10 秒后自动重试。", true);
@@ -179,6 +215,8 @@ async function poll(id, version) {
   }
 }
 function showResults(id, task) {
+  $("extraction-empty").hidden = true; $("extraction-results").hidden = true;
+  $("result-title").textContent = "探索独立音轨"; $("result-count").textContent = "4 STEMS";
   $("empty-results").hidden = true; $("results").hidden = false;
   $("result-filename").textContent = task.filename;
   $("tracks").replaceChildren();
@@ -202,6 +240,36 @@ function showResults(id, task) {
   }
   $("download-all").href = `${base}/download`;
 }
+
+function showExtraction(id, task) {
+  $("empty-results").hidden = true; $("extraction-empty").hidden = true; $("results").hidden = true;
+  $("extraction-results").hidden = false; $("result-title").textContent = "你的提取音频";
+  $("result-count").textContent = task.export_format.toUpperCase();
+  $("extraction-filename").textContent = task.filename;
+  $("extraction-player").src = `/api/v1/task/${encodeURIComponent(id)}/audio?preview=true`;
+  $("download-audio").href = `/api/v1/task/${encodeURIComponent(id)}/audio`;
+  $("download-audio").textContent = `下载 ${task.export_format.toUpperCase()} 音频 ↓`;
+  extractionSource = { id, name: task.filename };
+}
+async function separateExtraction() {
+  if (!extractionSource || uploading || localPreview) return;
+  const source = extractionSource, id = newId();
+  setUploading(true); status("正在创建分轨任务", "使用已提取的音频，无需再次上传。");
+  let accepted = false;
+  try {
+    await request(`/api/v1/task/${encodeURIComponent(source.id)}/separate`, {method:"POST", headers:{"X-Request-ID":id}});
+    accepted = true;
+  } catch (error) {
+    try { await request(`/api/v1/task/${id}`); accepted = true; }
+    catch { status("未能确认分轨任务", `${error.message} 请从最近的创作中查询该任务，避免重复提交。`, true); }
+  } finally { setUploading(false); }
+  remember({ id, name: `${source.name} · 分轨`, kind:"separation", status: accepted ? "queued" : "unknown" });
+  if (accepted) activate(id);
+}
+$("mode-separation").addEventListener("click", () => setMode("separation"));
+$("mode-extraction").addEventListener("click", () => setMode("extraction"));
+$("separate-extracted").addEventListener("click", separateExtraction);
+$("extraction-player").addEventListener("error", () => status("音频暂时无法播放", "请检查网络，或重新查询任务确认结果是否已过期。", true));
 $("file").addEventListener("change", event => selectFile(event.target.files[0]));
 for (const eventName of ["dragenter", "dragover"]) $("dropzone").addEventListener(eventName, event => { event.preventDefault(); if (!uploading) $("dropzone").classList.add("dragging"); });
 for (const eventName of ["dragleave", "drop"]) $("dropzone").addEventListener(eventName, event => { event.preventDefault(); $("dropzone").classList.remove("dragging"); });
@@ -209,7 +277,7 @@ $("dropzone").addEventListener("drop", event => selectFile(event.dataTransfer.fi
 $("start").addEventListener("click", submit);
 $("retry").addEventListener("click", () => activeId && activate(activeId));
 $("connection").addEventListener("click", checkConnection);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && activeId && !uploading && $("results").hidden) activate(activeId); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && activeId && !uploading && $("results").hidden && $("extraction-results").hidden) activate(activeId); });
 window.addEventListener("beforeunload", event => { if (uploading) { event.preventDefault(); event.returnValue = ""; } });
 async function init() {
   renderHistory(); checkConnection();
@@ -221,9 +289,10 @@ async function init() {
   }
   try {
     config = await request("/api/v1/web-config");
-    $("file").accept = config.allowed_extensions.join(",");
-    if (!selectedFile) $("file-detail").textContent = `${config.allowed_extensions.map(x => x.slice(1).toUpperCase()).join(" / ")} · 最大 ${config.max_file_size_mb} MB`;
-    $("retention").textContent = `分离完成后保留 ${config.retention_hours} 小时，过期自动清理，请及时下载`;
+    const rules = fileRules();
+    $("file").accept = rules.extensions.join(",");
+    if (!selectedFile) $("file-detail").textContent = `${rules.extensions.map(x => x.slice(1).toUpperCase()).join(" / ")} · 最大 ${rules.size} MB`;
+    $("retention").textContent = `提取或分离完成后保留 ${config.retention_hours} 小时，过期自动清理，请及时下载`;
     if (selectedFile) selectFile(selectedFile);
   } catch { /* Keep safe defaults and allow manual connection retry. */ }
   if (records.length) activate(records[0].id);

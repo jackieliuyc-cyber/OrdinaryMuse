@@ -20,7 +20,9 @@ from fastapi.staticfiles import StaticFiles
 
 from separator import separator
 from task_store import TaskStore
-from config import HOST, PORT, MAX_FILE_SIZE_MB, ALLOWED_EXTENSIONS, MODEL_NAME, AUTO_CLEANUP_HOURS
+from extraction import extract_audio, EXPORT_FORMATS
+from config import (HOST, PORT, MAX_FILE_SIZE_MB, ALLOWED_EXTENSIONS, MODEL_NAME,
+                    AUTO_CLEANUP_HOURS, MAX_VIDEO_SIZE_MB, VIDEO_EXTENSIONS)
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("demucs-server")
@@ -63,6 +65,7 @@ tasks: TaskStore = None
 gpu_semaphore = asyncio.Semaphore(1)
 # Queue browser/App async jobs instead of running several models at once.
 inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="demucs")
+extraction_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="extraction")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
@@ -85,10 +88,111 @@ async def web_script():
 async def web_config():
     return {"max_file_size_mb": MAX_FILE_SIZE_MB,
             "allowed_extensions": sorted(ALLOWED_EXTENSIONS),
+            "max_video_size_mb": MAX_VIDEO_SIZE_MB,
+            "video_extensions": sorted(VIDEO_EXTENSIONS),
+            "export_formats": list(EXPORT_FORMATS),
             "retention_hours": AUTO_CLEANUP_HOURS}
 
 
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
+
+
+def request_task_id(value):
+    task_id = value.strip() or uuid.uuid4().hex
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
+        raise HTTPException(status_code=400, detail="Invalid X-Request-ID")
+    return task_id
+
+
+@app.post("/api/v1/extract/async", tags=["Extraction"])
+async def submit_extraction(file: UploadFile = File(...),
+                            format: str = Query(default="m4a"),
+                            x_request_id: str = Header(default="", alias="X-Request-ID")):
+    validate_file(file, VIDEO_EXTENSIONS, MAX_VIDEO_SIZE_MB)
+    if format not in EXPORT_FORMATS:
+        raise HTTPException(status_code=400, detail="不支持的导出格式")
+    task_id = request_task_id(x_request_id)
+    if not tasks.create(task_id, file.filename, kind="extraction", export_format=format):
+        existing = available_task(task_id)
+        if existing.get("kind") != "extraction" or existing.get("export_format") != format:
+            raise HTTPException(status_code=409, detail="请求 ID 已被另一任务使用")
+        return {"task_id": task_id, "status": existing["status"], "reused": True}
+    task_dir = OUTPUT_BASE / task_id
+    input_path = task_dir / ("input" + Path(file.filename).suffix.lower())
+    try:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        size = 0
+        with open(input_path, "wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_VIDEO_SIZE_MB * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail=f"视频不能超过 {MAX_VIDEO_SIZE_MB} MB")
+                output.write(chunk)
+        if not size:
+            raise HTTPException(status_code=400, detail="视频文件为空")
+        tasks.update(task_id, status="queued")
+        asyncio.get_running_loop().run_in_executor(extraction_executor, _extract_task,
+                                                   task_id, str(input_path), str(task_dir / "audio"), format)
+    except Exception as error:
+        tasks.finish(task_id, "failed", error=str(getattr(error, "detail", error)))
+        raise
+    finally:
+        await file.close()
+    return {"task_id": task_id, "status": tasks[task_id]["status"]}
+
+
+def _extract_task(task_id, input_path, output_dir, export_format):
+    try:
+        tasks.update(task_id, status="processing")
+        started = time.monotonic()
+        result = extract_audio(input_path, output_dir, export_format)
+        tasks.finish(task_id, "completed", processing_time=f"{time.monotonic() - started:.2f}s", **result)
+    except Exception as error:
+        logger.exception("Extraction failed: task=%s", task_id)
+        tasks.finish(task_id, "failed", error=str(error))
+
+
+@app.get("/api/v1/task/{task_id}/audio", tags=["Extraction"])
+async def extracted_audio(task_id: str, preview: bool = False,
+                          range_header: str = Header(default="", alias="Range")):
+    task = available_task(task_id)
+    if task.get("kind") != "extraction" or task["status"] != "completed":
+        raise HTTPException(status_code=400, detail="提音任务尚未完成")
+    filename = task["preview_file"] if preview else task["audio_file"]
+    path = OUTPUT_BASE / task_id / "audio" / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="提取文件不存在")
+    extension = "m4a" if preview else task["export_format"]
+    download_name = f"{Path(task['filename']).stem}-audio.{extension}"
+    return media_response(path, EXPORT_FORMATS[extension][1], download_name, range_header)
+
+
+@app.post("/api/v1/task/{source_id}/separate", tags=["Extraction"])
+async def separate_extracted(source_id: str, x_request_id: str = Header(default="", alias="X-Request-ID")):
+    task_id = request_task_id(x_request_id)
+    if task_id in tasks:
+        existing = available_task(task_id)
+        if existing.get("source_task_id") != source_id:
+            raise HTTPException(status_code=409, detail="请求 ID 已被另一任务使用")
+        return {"task_id": task_id, "status": existing["status"], "reused": True}
+    source = available_task(source_id)
+    if source.get("kind") != "extraction" or source["status"] != "completed":
+        raise HTTPException(status_code=400, detail="请先完成视频提音")
+    filename = f"{Path(source['filename']).stem}-audio.{source['export_format']}"
+    tasks.create(task_id, filename, kind="separation", source_task_id=source_id)
+    task_dir = OUTPUT_BASE / task_id
+    input_path = task_dir / source["audio_file"]
+    try:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        # Own a copy so expiry of the extraction never deletes queued model input.
+        await asyncio.to_thread(shutil.copyfile, OUTPUT_BASE / source_id / "audio" / source["audio_file"], input_path)
+        tasks.update(task_id, status="queued")
+        asyncio.get_running_loop().run_in_executor(inference_executor, _process_task,
+                                                   task_id, str(input_path), str(task_dir / "stems"))
+    except Exception as error:
+        tasks.finish(task_id, "failed", error="提音结果无法读取，请重新提取视频。")
+        raise HTTPException(status_code=400, detail="提音结果无法读取，请重新提取视频。") from error
+    return {"task_id": task_id, "status": tasks[task_id]["status"]}
 
 
 @app.post("/api/v1/separate", summary="Sync separation", tags=["Separation"])
@@ -144,7 +248,9 @@ async def separate_async(
     if len(task_id) > 64 or any(not (char.isalnum() or char in "-_") for char in task_id):
         raise HTTPException(status_code=400, detail="Invalid X-Request-ID")
 
-    if not tasks.create(task_id, file.filename):
+    if not tasks.create(task_id, file.filename, kind="separation"):
+        if tasks[task_id].get("kind", "separation") != "separation":
+            raise HTTPException(status_code=409, detail="请求 ID 已被另一任务使用")
         logger.info("Reusing idempotent task: task=%s status=%s", task_id, tasks[task_id]["status"])
         return {"task_id": task_id, "status": tasks[task_id]["status"], "reused": True}
 
@@ -211,7 +317,7 @@ async def get_task_status(task_id: str):
 @app.get("/api/v1/task/{task_id}/download", summary="Download all stems", tags=["Separation"])
 async def download_stems(task_id: str):
     task = available_task(task_id)
-    if task["status"] != "completed":
+    if task["status"] != "completed" or task.get("kind") == "extraction":
         raise HTTPException(status_code=400, detail=f"Task status: {task['status']}")
 
     stems_dir = OUTPUT_BASE / task_id / "stems"
@@ -249,6 +355,10 @@ async def download_single_stem(
                             detail=f"Stem '{stem_name}' not found. Available: {available}")
 
     media_type = "audio/mp4" if extension == "m4a" else "audio/wav"
+    return media_response(stem_path, media_type, f"{stem_name}.{extension}", range_header)
+
+
+def media_response(stem_path, media_type, filename, range_header):
     # The pinned Starlette version does not implement byte ranges in FileResponse.
     # Browser audio players (especially mobile Safari) need these to seek/play.
     size = stem_path.stat().st_size
@@ -280,7 +390,7 @@ async def download_single_stem(
         headers.update({"Content-Range": f"bytes {start}-{end}/{size}",
                         "Content-Length": str(end - start + 1)})
         return StreamingResponse(chunks(), status_code=206, media_type=media_type, headers=headers)
-    return FileResponse(stem_path, media_type=media_type, filename=f"{stem_name}.{extension}", headers=headers)
+    return FileResponse(stem_path, media_type=media_type, filename=filename, headers=headers)
 
 
 @app.get("/api/v1/health", summary="Health check", tags=["System"])
@@ -308,16 +418,16 @@ async def list_tasks():
     return {"tasks": snapshot, "count": len(snapshot)}
 
 
-def validate_file(file: UploadFile):
+def validate_file(file: UploadFile, extensions=ALLOWED_EXTENSIONS, max_size=MAX_FILE_SIZE_MB):
     if not file.filename or "/" in file.filename or "\\" in file.filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
     ext = Path(file.filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
+    if ext not in extensions:
         raise HTTPException(status_code=400,
-                            detail=f"Unsupported format '{ext}'. Allowed: {ALLOWED_EXTENSIONS}")
-    if file.size and file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                            detail=f"Unsupported format '{ext}'. Allowed: {extensions}")
+    if file.size and file.size > max_size * 1024 * 1024:
         raise HTTPException(status_code=400,
-                            detail=f"File too large. Max: {MAX_FILE_SIZE_MB}MB")
+                            detail=f"File too large. Max: {max_size}MB")
 
 
 def cleanup_expired_tasks(now=None):

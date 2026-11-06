@@ -38,9 +38,9 @@ class TaskStore:
             raise KeyError(task_id)
         return json.loads(row[0])
 
-    def create(self, task_id, filename):
+    def create(self, task_id, filename, **metadata):
         data = {"status": "uploading", "filename": filename,
-                "created_at": utcnow().isoformat(), "stems": {}}
+                "created_at": utcnow().isoformat(), "stems": {}, **metadata}
         with self.connection() as db:
             result = db.execute("INSERT OR IGNORE INTO tasks VALUES (?, ?)",
                                 (task_id, json.dumps(data)))
@@ -74,7 +74,7 @@ class TaskStore:
         # Preserve the task and report an actionable failure instead of polling forever.
         for task_id, task in self.snapshot().items():
             if task["status"] in {"uploading", "queued", "processing"}:
-                self.finish(task_id, "failed", error="服务重启导致任务中断，请重新上传音频。")
+                self.finish(task_id, "failed", error="服务重启导致任务中断，请重新提交文件。")
 
     @staticmethod
     def is_expired(task, now=None):

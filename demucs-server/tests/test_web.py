@@ -2,6 +2,7 @@
 import io
 import json
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -89,10 +90,10 @@ class WebTests(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=10) as response:
             return response.status, response.headers, response.read()
 
-    def upload(self, task_id, filename="song.wav"):
+    def upload(self, task_id, filename="song.wav", content=b"fixture", endpoint="/api/v1/separate/async"):
         body = (f'--test-boundary\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-                'Content-Type: audio/wav\r\n\r\nfixture\r\n--test-boundary--\r\n').encode()
-        request = urllib.request.Request(self.base + "/api/v1/separate/async", data=body, headers={
+                'Content-Type: application/octet-stream\r\n\r\n').encode() + content + b'\r\n--test-boundary--\r\n'
+        request = urllib.request.Request(self.base + endpoint, data=body, headers={
             "Content-Type": "multipart/form-data; boundary=test-boundary", "X-Request-ID": task_id,
         })
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -170,6 +171,69 @@ class WebTests(unittest.TestCase):
         self.assertIn("Invalid test audio", task["error"])
         self.assertIn("failed_at", task)
         self.assertIn("expires_at", task)
+
+    def make_video(self, audio=True):
+        path = Path(self.temp.name) / ("fixture-audio.mp4" if audio else "fixture-silent.mp4")
+        command = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:r=10"]
+        if audio:
+            command += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-c:a", "aac"]
+        subprocess.run(command + ["-t", "0.3", "-c:v", "mpeg4", str(path)], check=True, capture_output=True, timeout=30)
+        return path.read_bytes()
+
+    def test_video_extract_formats_and_continue_separation(self):
+        video = self.make_video()
+        for format in ["m4a", "wav", "aiff", "caf"]:
+            task_id = "extract-" + format
+            endpoint = "/api/v1/extract/async?format=" + format
+            self.upload(task_id, "短片.mp4", video, endpoint)
+            self.assertTrue(self.upload(task_id, "短片.mp4", video, endpoint)["reused"])
+            task = self.wait_task(task_id)
+            self.assertEqual(task["status"], "completed", task)
+            self.assertEqual(task["kind"], "extraction")
+            self.assertEqual(task["export_format"], format)
+            status, headers, data = self.get(f"/api/v1/task/{task_id}/audio")
+            self.assertEqual(status, 200)
+            self.assertIn(format, headers["Content-Disposition"])
+            self.assertGreater(len(data), 100)
+            probe = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name,sample_rate",
+                "-of", "json", str(server.OUTPUT_BASE / task_id / "audio" / task["audio_file"])]))
+            self.assertEqual(len(probe["streams"]), 1)
+            self.assertEqual(probe["streams"][0]["codec_name"], server.EXPORT_FORMATS[format][0])
+            with urllib.request.urlopen(urllib.request.Request(self.base + f"/api/v1/task/{task_id}/audio?preview=true",
+                                                               headers={"Range": "bytes=0-31"})) as response:
+                self.assertEqual(response.status, 206)
+                self.assertEqual(len(response.read()), 32)
+        # The child job owns its input, independent of the extraction's expiry.
+        request = urllib.request.Request(self.base + "/api/v1/task/extract-caf/separate", data=b"",
+                                         headers={"X-Request-ID": "from-video"})
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(json.load(response)["task_id"], "from-video")
+        with urllib.request.urlopen(request) as response:
+            self.assertTrue(json.load(response)["reused"])
+        server.tasks.update("extract-caf", expires_at=(utcnow() - timedelta(seconds=1)).isoformat())
+        server.cleanup_expired_tasks()
+        self.assertTrue((server.OUTPUT_BASE / "from-video" / "audio.caf").exists())
+        self.assertEqual(self.wait_task("from-video")["status"], "completed")
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.get("/api/v1/task/extract-caf/audio")
+        self.assertEqual(error.exception.code, 410)
+        # Verify a fresh store can locate the extraction output after restart.
+        reopened = TaskStore(server.OUTPUT_BASE / "tasks.sqlite3", 24)
+        self.assertEqual(reopened["extract-m4a"]["audio_file"], "audio.m4a")
+
+    def test_video_validation_and_no_audio(self):
+        for filename, endpoint in [("bad.mp3", "/api/v1/extract/async"),
+                                   ("bad.mp4", "/api/v1/extract/async?format=exe")]:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.upload("video-invalid", filename, b"test", endpoint)
+            self.assertEqual(error.exception.code, 400)
+        with patch.object(server, "MAX_VIDEO_SIZE_MB", 0):
+            with self.assertRaises(urllib.error.HTTPError):
+                self.upload("video-too-large", "large.mp4", b"test", "/api/v1/extract/async")
+        self.upload("video-silent", "silent.mp4", self.make_video(False), "/api/v1/extract/async")
+        task = self.wait_task("video-silent")
+        self.assertEqual(task["status"], "failed")
+        self.assertIn("没有可提取", task["error"])
 
     def test_cleanup_retries_disk_failure_and_keeps_active_jobs(self):
         self.upload("cleanup-retry")
