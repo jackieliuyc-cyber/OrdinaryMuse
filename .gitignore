@@ -1,1 +1,5 @@
 demucs-server/.venv/
+__pycache__/
+*.pyc
+demucs-server/output/
+/output/
