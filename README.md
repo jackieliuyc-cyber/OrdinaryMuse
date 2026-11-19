@@ -1,5 +1,7 @@
 # OrdinaryMuse
 
+新 Mac 的一键安装、模型启动与 ECS SSH 反向隧道见 [Mac 执行机说明](deploy/mac/README.md)：`bash deploy/mac/setup.sh`。
+
 ## H5 音轨工作室
 
 H5 与模型接口由同一个 Mac 服务提供，无需 Node.js 构建或额外云服务器。
