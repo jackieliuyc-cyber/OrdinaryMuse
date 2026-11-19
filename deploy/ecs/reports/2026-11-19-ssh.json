@@ -1,0 +1,42 @@
+{
+  "date": "2026-11-19",
+  "timezone": "Asia/Shanghai",
+  "instance": "i-bp1dhypbynl7gfsclml5",
+  "region": "cn-hangzhou",
+  "user": "muse-tunnel",
+  "uid": 1000,
+  "gid": 1000,
+  "ssh_port": 22,
+  "allowed_remote_listener": "127.0.0.1:19000",
+  "authentication": "publickey only; password locked",
+  "authorized_keys_file": "/etc/ssh/authorized_keys/muse-tunnel",
+  "authorized_keys_owner": "root:root",
+  "authorized_keys_mode": "0644",
+  "authorized_key_count_after_checks": 0,
+  "administrator_effective_policy_unchanged": true,
+  "sudo_access": false,
+  "sshd_master_pid_before": 1783,
+  "sshd_master_pid_after": 1783,
+  "backup": "/srv/ordinary-muse-h5/ssh-staging/tunnel-20261119-193855-6ac799-r2/sshd_config.before",
+  "host_ed25519_fingerprint": "SHA256:x9amYoLGyoVucoB9GICkZnGGSvsbwh+TmXRuUZiHYDA",
+  "local_tests_passed": 5,
+  "ecs_loopback_tests": {
+    "key_login_probe": "passed",
+    "general_shell": "denied",
+    "health_command": "passed",
+    "reverse_127_0_0_1_19000": "passed",
+    "other_reverse_port": "denied",
+    "local_forwarding": "denied",
+    "temporary_key_revoked": true,
+    "new_mac_connection_tested": false
+  },
+  "post_checks": {
+    "sshd_and_four_existing_web_services_active": true,
+    "audio_extraction_health": "healthy",
+    "new_public_listeners": false,
+    "security_group_or_domain_changes": false,
+    "test_tunnel_listener_left_running": false,
+    "h5_upstream_switched_to_mac": false
+  },
+  "pending": "Authorize the new Mac public key when the user provides it, then verify the actual Mac connection."
+}

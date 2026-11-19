@@ -4,6 +4,10 @@ Target: `i-bp1dhypbynl7gfsclml5` (`cn-hangzhou`), profile `h5-hangzhou`.
 Only loopback listeners: H5 Nginx `127.0.0.1:8782`, extraction API `127.0.0.1:8783`.
 No security group, domain or public listener changes are required.
 
+The dedicated, key-only Mac reverse-tunnel account and its restrictions are
+documented in [ssh/README.md](ssh/README.md). It only permits remote forwarding to
+`127.0.0.1:19000`; the new Mac public key is still pending authorization.
+
 ## Private shared-domain paths
 
 The private gateway on `127.0.0.1:8782` now uses these namespaces:
