@@ -172,6 +172,15 @@ class WebTests(unittest.TestCase):
         self.assertIn("failed_at", task)
         self.assertIn("expires_at", task)
 
+    def test_extraction_only_service_rejects_model_work(self):
+        with patch.object(server, "SEPARATION_ENABLED", False):
+            config = json.loads(self.get("/api/v1/web-config")[2])
+            self.assertFalse(config["separation_enabled"])
+            self.assertEqual(json.loads(self.get("/api/v1/health")[2])["capabilities"], ["extraction"])
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.upload("disabled-model")
+            self.assertEqual(error.exception.code, 503)
+
     def make_video(self, audio=True):
         path = Path(self.temp.name) / ("fixture-audio.mp4" if audio else "fixture-silent.mp4")
         command = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:r=10"]

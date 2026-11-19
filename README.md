@@ -4,6 +4,14 @@
 
 ## H5 音轨工作室
 
+ECS 私有部署与独立视频提音模式见 [deploy/ecs/README.md](deploy/ecs/README.md)。
+设置 `SEPARATION_ENABLED=0` 时，不导入或加载 Demucs，分轨入口会明确提示暂未启用；
+设置 `MUSE_DATA_DIR` 可将任务数据库及音频输出保存在发布目录之外。
+
+统一入口使用 `/score/`（谱拼接）和 `/audio/`（提音分轨），根路径跳转到 `/score/`。
+页面、反馈接口和提音分轨接口按各自前缀分流；当前 ECS 入口仅监听 `127.0.0.1:8782`，未开放公网。
+提音分轨网页的上传、查询、试听与下载地址会跟随页面所在路径，仍支持在 Mac 服务根路径直接使用。
+
 H5 与模型接口由同一个 Mac 服务提供，无需 Node.js 构建或额外云服务器。
 按下文启动 `demucs-server/start.sh` 后，在浏览器打开 `http://127.0.0.1:8000/`。
 外网使用现有花生壳映射地址的根路径，建议配置 HTTPS 映射到本地 `8000` 端口。
@@ -35,6 +43,7 @@ H5 与模型接口由同一个 Mac 服务提供，无需 Node.js 构建或额外
 cd demucs-server
 .venv/bin/python -m unittest discover -s tests -v
 node --check web/app.js
+node --test tests/paths.test.cjs
 ```
 
 测试覆盖页面与静态资源、真实 HTTP 上传/轮询/下载、重复请求、串行排队、文件校验、失败任务、完成后 24 小时边界、重启恢复与清理、删除失败重试；视频测试使用 FFmpeg 生成合成视频，验证四种格式编码、无声视频提示、提音后分轨及源文件过期隔离。

@@ -18,11 +18,15 @@ from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from separator import separator
 from task_store import TaskStore
 from extraction import extract_audio, EXPORT_FORMATS
 from config import (HOST, PORT, MAX_FILE_SIZE_MB, ALLOWED_EXTENSIONS, MODEL_NAME,
-                    AUTO_CLEANUP_HOURS, MAX_VIDEO_SIZE_MB, VIDEO_EXTENSIONS)
+                    AUTO_CLEANUP_HOURS, MAX_VIDEO_SIZE_MB, VIDEO_EXTENSIONS, SEPARATION_ENABLED)
+
+if SEPARATION_ENABLED:
+    from separator import separator
+else:
+    separator = None
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("demucs-server")
@@ -34,10 +38,11 @@ async def lifespan(app: FastAPI):
     tasks = TaskStore(OUTPUT_BASE / "tasks.sqlite3", AUTO_CLEANUP_HOURS)
     tasks.recover_interrupted()
     cleanup_expired_tasks()
-    logger.info("Loading Demucs model: %s", MODEL_NAME)
-    separator.load_model()
-    logger.info("Demucs model loaded. Device=%s sources=%s sample_rate=%s",
-                separator.device, separator.source_names, separator.sample_rate)
+    if SEPARATION_ENABLED:
+        logger.info("Loading Demucs model: %s", MODEL_NAME)
+        separator.load_model()
+        logger.info("Demucs model loaded. Device=%s sources=%s sample_rate=%s",
+                    separator.device, separator.source_names, separator.sample_rate)
     cleanup_task = asyncio.create_task(periodic_cleanup())
     try:
         yield
@@ -59,7 +64,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-OUTPUT_BASE = Path(__file__).resolve().parent / "output"
+OUTPUT_BASE = Path(os.getenv("MUSE_DATA_DIR", str(Path(__file__).resolve().parent / "output")))
 OUTPUT_BASE.mkdir(exist_ok=True)
 tasks: TaskStore = None
 gpu_semaphore = asyncio.Semaphore(1)
@@ -91,6 +96,7 @@ async def web_config():
             "max_video_size_mb": MAX_VIDEO_SIZE_MB,
             "video_extensions": sorted(VIDEO_EXTENSIONS),
             "export_formats": list(EXPORT_FORMATS),
+            "separation_enabled": SEPARATION_ENABLED,
             "retention_hours": AUTO_CLEANUP_HOURS}
 
 
@@ -169,6 +175,7 @@ async def extracted_audio(task_id: str, preview: bool = False,
 
 @app.post("/api/v1/task/{source_id}/separate", tags=["Extraction"])
 async def separate_extracted(source_id: str, x_request_id: str = Header(default="", alias="X-Request-ID")):
+    require_separation()
     task_id = request_task_id(x_request_id)
     if task_id in tasks:
         existing = available_task(task_id)
@@ -200,6 +207,7 @@ async def separate_sync(
     file: UploadFile = File(...),
     model: str = Query(default="htdemucs_ft")
 ):
+    require_separation()
     validate_file(file)
     logger.info("Sync separation request: filename=%s model=%s", file.filename, model)
     async with gpu_semaphore:
@@ -242,6 +250,7 @@ async def separate_async(
     file: UploadFile = File(...),
     x_request_id: str = Header(default="", alias="X-Request-ID"),
 ):
+    require_separation()
     validate_file(file)
 
     task_id = x_request_id.strip() or str(uuid.uuid4())[:8]
@@ -395,6 +404,8 @@ def media_response(stem_path, media_type, filename, range_header):
 
 @app.get("/api/v1/health", summary="Health check", tags=["System"])
 async def health():
+    if not SEPARATION_ENABLED:
+        return {"status": "healthy", "capabilities": ["extraction"], "separation_enabled": False}
     import torch
     info = {
         "status": "healthy",
@@ -407,6 +418,11 @@ async def health():
         info["gpu"] = torch.cuda.get_device_name(0)
         info["gpu_memory_total"] = f"{torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB"
     return info
+
+
+def require_separation():
+    if not SEPARATION_ENABLED:
+        raise HTTPException(status_code=503, detail="视频提音服务已就绪，Demucs 分轨暂未启用。")
 
 
 @app.get("/api/v1/tasks", summary="List all tasks", tags=["System"])

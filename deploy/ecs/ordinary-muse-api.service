@@ -1,0 +1,28 @@
+[Unit]
+Description=Ordinary Muse private audio extraction API
+After=network.target
+
+[Service]
+Type=simple
+User=nginx
+Group=nginx
+WorkingDirectory=/srv/ordinary-muse-h5/backend-releases/ecs-20261119
+Environment=SEPARATION_ENABLED=0
+Environment=MUSE_DATA_DIR=/var/lib/ordinary-muse
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PATH=/srv/ordinary-muse-h5/runtime/bin:/srv/ordinary-muse-h5/runtime/venv/bin:/usr/bin:/bin
+ExecStart=/srv/ordinary-muse-h5/runtime/venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8783 --workers 1
+Restart=on-failure
+StateDirectory=ordinary-muse
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryAccounting=true
+MemoryLimit=512M
+CPUAccounting=true
+CPUQuota=100%
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

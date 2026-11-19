@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-19",
+  "timezone": "Asia/Shanghai",
+  "instance": "i-bp1dhypbynl7gfsclml5",
+  "region": "cn-hangzhou",
+  "release": "/srv/ordinary-muse-h5/path-releases/paths-20261119-181103-8cd9ec",
+  "config_backup": "/srv/ordinary-muse-h5/path-staging/paths-20261119-181103-8cd9ec/nginx.before.conf",
+  "gateway_listen": "127.0.0.1:8782",
+  "gateway_config_sha256": "d5f6702f37e27492057e072c88cf70a96e9a0a4da57ba908f2019ff8adb02625",
+  "routes": {
+    "/": "302 /score/",
+    "/score": "308 /score/",
+    "/audio": "308 /audio/",
+    "/score/": "score static page and assets",
+    "/score/api/feedback": "127.0.0.1:8781/api/feedback",
+    "/audio/": "audio static page and assets",
+    "/audio/api/": "127.0.0.1:8783/api/",
+    "unprefixed_api": "404"
+  },
+  "local_tests": {
+    "backend_http_and_retention": {"passed": 12, "model": "simulated"},
+    "frontend_root_and_audio_mount": {"passed": 3},
+    "release_packaging_and_rollback": {"passed": 5}
+  },
+  "ecs_checks": {
+    "redirect_and_static_paths_passed": 18,
+    "namespace_isolation": "passed",
+    "score_video_range": "passed",
+    "feedback_validation": "empty feedback rejected with 400",
+    "feedback_count_before": 8,
+    "feedback_count_after": 8,
+    "original_tasks_preserved": 8,
+    "original_expiry_deadlines_unchanged": true,
+    "extraction_task_id": "f184d913592c4a5a96715028619d25f1",
+    "extraction_processing_seconds": 2.49,
+    "extraction_download_bytes": 1131695,
+    "extraction_preview_range": "206, 32 bytes",
+    "retention_seconds_from_completion": 86400,
+    "existing_services_active": 4,
+    "api_and_feedback_processes_restarted": false,
+    "new_public_listeners": false,
+    "domain_or_security_group_changes": false
+  },
+  "browser_checks": {
+    "transport": "temporary read-only loopback proxy over Workbench; stopped after QA",
+    "root_redirect_to_score": "passed",
+    "score_page_and_styles": "passed",
+    "audio_page_and_styles": "passed",
+    "audio_health_badge": "提音服务在线"
+  },
+  "limitations": [
+    "Demucs serving remains disabled on the ECS; Mac model routing is not enabled by this change.",
+    "Score upstream repository files are adapted while packaging; the original source directory is preserved.",
+    "Results remain in the existing task backend; namespace routing does not add cross-backend result replication."
+  ]
+}

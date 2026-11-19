@@ -1,0 +1,120 @@
+{
+  "recorded_at": "2026-11-19T03:27:28.094733+00:00",
+  "input_seconds": 30,
+  "model": "htdemucs_ft",
+  "cpu_quota_percent": 150,
+  "threads": 2,
+  "memory_limit_mib": 1600,
+  "timeout_seconds": 900,
+  "unit": {
+    "Result": "timeout",
+    "ExecMainStatus": "15",
+    "CPUUsageNSec": "526308148087",
+    "ActiveState": "failed",
+    "SubState": "failed"
+  },
+  "run": {
+    "model": "htdemucs_ft",
+    "threads": 2,
+    "input": "/srv/ordinary-muse-h5/benchmarks/benchmark-30s.wav",
+    "status": "timeout",
+    "note": "Worker was terminated by systemd before it could save a final result."
+  },
+  "resources": {
+    "peak_ram_bytes": 1225601024,
+    "peak_ram_plus_swap_bytes": 1925378048,
+    "sampled_peak_process_swap_bytes": 1330683904,
+    "sampled_peak_host_swap_kb": 1410016,
+    "memory_limit_hits": 0
+  },
+  "output_files": [],
+  "extraction_baseline": [
+    {
+      "format": "m4a",
+      "task_id": "936d158084c24cacbbdd92ddbad5377b",
+      "processing_seconds": "2.15s",
+      "total_seconds": 2.6315914430015255,
+      "download_bytes": 1131695
+    },
+    {
+      "format": "wav",
+      "task_id": "113b58d1b4674232ae83e075485678fd",
+      "processing_seconds": "1.26s",
+      "total_seconds": 1.6468467339873314,
+      "download_bytes": 7938150
+    },
+    {
+      "format": "aiff",
+      "task_id": "e4652928a6c5473a98328eee564adb29",
+      "processing_seconds": "1.24s",
+      "total_seconds": 1.6401065040263347,
+      "download_bytes": 7938102
+    },
+    {
+      "format": "caf",
+      "task_id": "820cee03006e40848251115323c11a07",
+      "processing_seconds": "1.26s",
+      "total_seconds": 1.679386431002058,
+      "download_bytes": 10584193
+    }
+  ],
+  "extraction_during_diagnostic_run": [
+    {
+      "format": "m4a",
+      "task_id": "2cbe41660206495281c5b7a0ae0a5829",
+      "processing_seconds": "3.95s",
+      "total_seconds": 6.379127453023102,
+      "download_bytes": 1131695
+    },
+    {
+      "format": "wav",
+      "task_id": "8c962e198f79431b89290d89874d0531",
+      "processing_seconds": "2.90s",
+      "total_seconds": 3.491870828991523,
+      "download_bytes": 7938150
+    },
+    {
+      "format": "aiff",
+      "task_id": "bbd7e72bb4eb43c7aa499896faea4a2f",
+      "processing_seconds": "1.90s",
+      "total_seconds": 2.2849513239925727,
+      "download_bytes": 7938102
+    },
+    {
+      "format": "caf",
+      "task_id": "e6a7ee525c3e455788e448ae83ade087",
+      "processing_seconds": "1.87s",
+      "total_seconds": 2.338632990984479,
+      "download_bytes": 10584193
+    }
+  ],
+  "extraction_health": {
+    "status": "healthy",
+    "capabilities": [
+      "extraction"
+    ],
+    "separation_enabled": false
+  },
+  "services": [
+    "active",
+    "active",
+    "active",
+    "active"
+  ],
+  "listeners": [
+    "LISTEN 0      511    127.0.0.1:8780 0.0.0.0:*",
+    "LISTEN 0      5      127.0.0.1:8781 0.0.0.0:*",
+    "LISTEN 0      511    127.0.0.1:8782 0.0.0.0:*",
+    "LISTEN 0      2048   127.0.0.1:8783 0.0.0.0:*",
+    "LISTEN 0      128      0.0.0.0:22   0.0.0.0:*",
+    "LISTEN 0      128         [::]:22      [::]:*"
+  ],
+  "initial_diagnostic_run": {
+    "model": "htdemucs_ft",
+    "threads": 2,
+    "input": "/srv/ordinary-muse-h5/benchmarks/benchmark-30s.wav",
+    "status": "aborted_diagnostic",
+    "reason": "Initial 1300 MiB cap caused swapping; rerun starts fresh at 1600 MiB.",
+    "stopped_at": "2026-11-19T03:11:53.936485+00:00"
+  }
+}

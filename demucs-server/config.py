@@ -1,6 +1,7 @@
 import os
 
 MODEL_NAME = os.getenv("DEMUCS_MODEL", "htdemucs_ft")
+SEPARATION_ENABLED = os.getenv("SEPARATION_ENABLED", "1") == "1"
 DEVICE = os.getenv("DEMUCS_DEVICE", "auto")
 AAC_BITRATE = os.getenv("AAC_BITRATE", "256k")
 AAC_MAX_WORKERS = max(1, int(os.getenv("AAC_MAX_WORKERS", "2")))

@@ -4,6 +4,10 @@ const labels = { uploading: "正在接收", queued: "排队中", processing: "�
 const stemLabels = { vocals: "人声", drums: "鼓", bass: "贝斯", other: "其他乐器" };
 const storageKey = "ordinary-muse-tasks-v1";
 const localPreview = location.protocol === "file:";
+// Resolve every API/media URL within this page's mount (e.g. /audio/), while
+// retaining direct Mac/App access at /. Canonical trailing slashes are set by Nginx.
+const appBaseUrl = new URL("./", location.href);
+function apiUrl(path) { return new URL(path.replace(/^\/+/, ""), appBaseUrl).href; }
 let config = { max_file_size_mb: 50, allowed_extensions: [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"] };
 let selectedFile = null, uploading = false, activeId = null, pollTimer = null, generation = 0;
 let mode = "separation", extractionSource = null;
@@ -30,7 +34,7 @@ function setMode(value) {
   $("mode-tag").textContent = video ? "视频提音" : "音轨分离";
   $("file-title").textContent = video ? "选择视频，或拖放到这里" : "选择音频，或拖放到这里";
   $("file-detail").textContent = `${rules.extensions.map(x => x.slice(1).toUpperCase()).join(" / ")} · 最大 ${rules.size} MB`;
-  $("upload-hint").textContent = video ? "视频上传至 Mac 处理，提取第一条音轨。上传时请保持页面打开。" : "音频将在服务端处理。上传时请保持页面打开。";
+  $("upload-hint").textContent = video ? "视频上传至服务端处理，提取第一条音轨。上传时请保持页面打开。" : "音频将在服务端处理。上传时请保持页面打开。";
   $("result-title").textContent = video ? "你的提取音频" : "探索独立音轨";
   $("result-count").textContent = video ? "AUDIO" : "4 STEMS";
   $("start").textContent = video ? "开始提取 ↗" : "开始分离 ↗";
@@ -72,16 +76,17 @@ function setUploading(value) {
   uploading = value;
   $("file").disabled = value;
   $("dropzone").classList.toggle("busy", value);
-  $("start").disabled = value || !selectedFile;
+  $("start").disabled = value || !selectedFile || (mode === "separation" && config.separation_enabled === false);
   $("start").textContent = value ? "正在提交…" : mode === "extraction" ? "开始提取 ↗" : "开始分离 ↗";
   for (const id of ["mode-separation", "mode-extraction", "export-format", "separate-extracted"]) $(id).disabled = value;
+  if (config.separation_enabled === false) $("separate-extracted").disabled = true;
   renderHistory();
 }
 async function request(path, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(path, { ...options, signal: controller.signal, cache: "no-store" });
+    const response = await fetch(apiUrl(path), { ...options, signal: controller.signal, cache: "no-store" });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       const error = new Error(typeof data.detail === "string" ? data.detail : `请求失败 (${response.status})`); error.status = response.status; throw error;
@@ -97,9 +102,9 @@ async function checkConnection() {
   }
   $("connection-label").textContent = "检查连接中";
   try {
-    await request("/api/v1/health");
+    const health = await request("/api/v1/health");
     $("connection").className = "connection online";
-    $("connection-label").textContent = "分离服务在线";
+    $("connection-label").textContent = health.separation_enabled === false ? "提音服务在线" : "分离服务在线";
   } catch {
     $("connection").className = "connection offline";
     $("connection-label").textContent = "未连接 · 点击重试";
@@ -118,13 +123,14 @@ function selectFile(file) {
   selectedFile = file;
   $("file-title").textContent = file.name;
   $("file-detail").textContent = `${(file.size / 1024 / 1024).toFixed(1)} MB · 点击可重新选择`;
-  $("start").disabled = false;
+  $("start").disabled = mode === "separation" && config.separation_enabled === false;
+  if ($("start").disabled) status("分轨暂未启用", "当前服务器支持视频提音，Demucs 分轨仍在评估中。请选择视频提音使用。", true);
 }
 function upload(file, id) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest(), form = new FormData();
     form.append("file", file);
-    xhr.open("POST", mode === "extraction" ? `/api/v1/extract/async?format=${encodeURIComponent($("export-format").value)}` : "/api/v1/separate/async");
+    xhr.open("POST", apiUrl(mode === "extraction" ? `/api/v1/extract/async?format=${encodeURIComponent($("export-format").value)}` : "/api/v1/separate/async"));
     xhr.setRequestHeader("X-Request-ID", id);
     xhr.timeout = 600000;
     xhr.upload.onprogress = (event) => {
@@ -150,7 +156,7 @@ function newId() {
   return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 }
 async function submit() {
-  if (!selectedFile || uploading) return;
+  if (!selectedFile || uploading || (mode === "separation" && config.separation_enabled === false)) return;
   clearTimeout(pollTimer); generation++;
   const id = newId(), file = selectedFile;
   activeId = id; $("retry").hidden = true;
@@ -220,7 +226,7 @@ function showResults(id, task) {
   $("empty-results").hidden = true; $("results").hidden = false;
   $("result-filename").textContent = task.filename;
   $("tracks").replaceChildren();
-  const base = `/api/v1/task/${encodeURIComponent(id)}`;
+  const base = apiUrl(`/api/v1/task/${encodeURIComponent(id)}`);
   for (const name of Object.keys(task.stems || {})) {
     const track = document.createElement("div"), head = document.createElement("div"), title = document.createElement("strong");
     track.className = "track"; head.className = "track-head"; title.textContent = stemLabels[name] || name;
@@ -246,13 +252,15 @@ function showExtraction(id, task) {
   $("extraction-results").hidden = false; $("result-title").textContent = "你的提取音频";
   $("result-count").textContent = task.export_format.toUpperCase();
   $("extraction-filename").textContent = task.filename;
-  $("extraction-player").src = `/api/v1/task/${encodeURIComponent(id)}/audio?preview=true`;
-  $("download-audio").href = `/api/v1/task/${encodeURIComponent(id)}/audio`;
+  $("extraction-player").src = apiUrl(`/api/v1/task/${encodeURIComponent(id)}/audio?preview=true`);
+  $("download-audio").href = apiUrl(`/api/v1/task/${encodeURIComponent(id)}/audio`);
   $("download-audio").textContent = `下载 ${task.export_format.toUpperCase()} 音频 ↓`;
+  $("separate-extracted").disabled = config.separation_enabled === false;
+  $("separate-extracted").textContent = config.separation_enabled === false ? "分轨暂未启用" : "继续分离四条音轨 ↗";
   extractionSource = { id, name: task.filename };
 }
 async function separateExtraction() {
-  if (!extractionSource || uploading || localPreview) return;
+  if (!extractionSource || uploading || localPreview || config.separation_enabled === false) return;
   const source = extractionSource, id = newId();
   setUploading(true); status("正在创建分轨任务", "使用已提取的音频，无需再次上传。");
   let accepted = false;
@@ -289,6 +297,7 @@ async function init() {
   }
   try {
     config = await request("/api/v1/web-config");
+    if (config.separation_enabled === false) setMode("extraction");
     const rules = fileRules();
     $("file").accept = rules.extensions.join(",");
     if (!selectedFile) $("file-detail").textContent = `${rules.extensions.map(x => x.slice(1).toUpperCase()).join(" / ")} · 最大 ${rules.size} MB`;
