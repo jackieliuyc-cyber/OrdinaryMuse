@@ -7,8 +7,8 @@
   <meta name="description" content="Ordinary Muse 音轨工作室：上传音乐，分离人声、鼓、贝斯和其他乐器。">
   <title>Ordinary Muse · 音轨工作室</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23101318'/%3E%3Cpath d='M16 38V26m8 20V18m8 33V13m8 30V21m8 16V27' stroke='%23ffca2e' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./style.css">
-  <script src="./app.js" defer></script>
+  <link rel="stylesheet" href="./style.css?v=player-icons-1">
+  <script src="./app.js?v=player-icons-1" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -29,12 +29,34 @@
           <label class="dropzone" id="dropzone" for="file"><input id="file" type="file" accept=".mp3,.wav,.flac,.ogg,.m4a,.aac,.wma"><span class="upload-icon" aria-hidden="true">↑</span><strong id="file-title">选择音频，或拖放到这里</strong><span id="file-detail">MP3 / WAV / FLAC / M4A 等 · 最大 50 MB</span><span class="choose">选择文件</span></label>
           <button id="start" class="primary" type="button" disabled>开始分离 <span aria-hidden="true">↗</span></button>
           <p class="hint" id="upload-hint">音频将在服务端处理。上传时请保持页面打开。</p>
-          <div id="status-box" class="status-box" hidden aria-live="polite" role="status"><div class="status-line"><strong id="status-title"></strong><span id="upload-percent"></span></div><progress id="progress" max="100" value="0" aria-label="上传进度"></progress><p id="status-detail"></p><button id="retry" class="text-button" type="button" hidden>重新查询任务</button></div>
+          <div id="status-box" class="status-box" hidden aria-live="polite" role="status">
+            <div class="status-line"><strong id="status-title"></strong><span id="upload-percent"></span></div>
+            <progress id="progress" max="100" value="0" hidden aria-label="上传进度"></progress>
+            <div id="task-progress-box" class="task-progress" hidden>
+              <div class="status-line"><span>处理进度</span><strong id="task-percent"></strong></div>
+              <progress id="task-progress" max="100" aria-label="处理进度"></progress>
+              <p id="task-elapsed" aria-live="off"></p>
+            </div>
+            <p id="status-detail"></p><button id="retry" class="text-button" type="button" hidden>重新查询任务</button>
+          </div>
         </section>
         <section class="panel result-panel" aria-labelledby="result-title">
           <div class="section-heading"><span class="step">02</span><h2 id="result-title">探索独立音轨</h2><span id="result-count" class="small-tag">4 STEMS</span></div>
           <div id="empty-results" class="empty-results"><div class="track-preview"><span>◉</span><div><strong>人声</strong><small>VOCALS</small></div><b>━━━━ ━━ ━━━</b></div><div class="track-preview"><span>◈</span><div><strong>鼓</strong><small>DRUMS</small></div><b>━━ ━━━ ━━━━</b></div><div class="track-preview"><span>≋</span><div><strong>贝斯</strong><small>BASS</small></div><b>━━━━━ ━━ ━━</b></div><div class="track-preview"><span>✧</span><div><strong>其他乐器</strong><small>OTHER</small></div><b>━━━ ━━━━ ━━</b></div><p>分离完成后，在这里试听和下载</p></div>
-          <div id="results" hidden><p id="result-filename" class="result-filename"></p><div id="tracks"></div><a id="download-all" class="secondary" download>下载全部 WAV 音轨 <span aria-hidden="true">↓</span></a><p class="hint">M4A 适合快速试听；WAV 适合后期制作。</p></div>
+          <div id="results" hidden><p id="result-filename" class="result-filename"></p>
+            <div id="mixer" class="mixer" hidden>
+              <div class="mixer-heading"><strong>混音试听</strong><button id="mix-reset" class="icon-button reset-control" type="button" aria-label="重置所有音轨音量" title="重置所有音轨音量"></button></div>
+              <div class="mixer-transport">
+                <button id="mix-play" class="icon-button mix-action" type="button" aria-label="合并播放" title="合并播放"></button>
+                <button id="mix-pause" class="icon-button" type="button" aria-label="暂停播放" title="暂停播放" disabled></button>
+                <label class="mix-timeline"><span class="sr-only">混音播放进度</span><input id="mix-seek" type="range" min="0" max="1000" step="1" value="0" disabled><output id="mix-time">0:00 / 0:00</output></label>
+              </div>
+              <p id="mix-message" class="muted" role="status">调整各轨音量后，点击合并播放。</p>
+            </div>
+            <div id="tracks"></div><a id="download-all" class="secondary" download>下载全部 WAV 音轨 <span aria-hidden="true">↓</span></a>
+            <div id="download-status" role="status" aria-live="polite" hidden><p id="download-message" class="hint"></p><progress id="download-progress" max="100" hidden aria-label="压缩包下载进度"></progress><button id="download-cancel" class="text-button" type="button" hidden>取消下载</button></div>
+            <p class="hint">各轨音量、静音和独奏仅影响试听，下载保留原始分轨。</p>
+          </div>
           <div id="extraction-results" hidden><p id="extraction-filename" class="result-filename"></p><audio id="extraction-player" controls preload="none" aria-label="试听提取音频"></audio><a id="download-audio" class="secondary" download>下载提取音频 ↓</a><button id="separate-extracted" class="primary" type="button">继续分离四条音轨 ↗</button><p class="hint">直接使用提取的音频，无需下载后重新上传。试听使用 M4A，下载保留所选格式。</p></div>
           <p id="extraction-empty" class="muted" hidden>上传视频后，在这里试听、下载音频，或继续分离人声与乐器。</p>
         </section>

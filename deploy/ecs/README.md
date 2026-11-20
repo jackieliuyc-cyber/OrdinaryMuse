@@ -4,6 +4,49 @@ Target: `i-bp1dhypbynl7gfsclml5` (`cn-hangzhou`), profile `h5-hangzhou`.
 Only loopback listeners: H5 Nginx `127.0.0.1:8782`, extraction API `127.0.0.1:8783`.
 No security group, domain or public listener changes are required.
 
+## Current-device private preview
+
+`private_preview.py` provides a local-only H5 entry over the existing Workbench
+profile when a direct SSH local forward is unavailable. It binds exclusively to
+`127.0.0.1`; it does not change ECS listeners, SSH permissions or security groups.
+Python 3.11 and an already authenticated Workbench CLI are required on this Mac;
+Python 3.11 and the existing private H5 gateway are required on ECS.
+
+```bash
+python3.11 deploy/ecs/private_preview.py --profile h5-hangzhou
+# Open http://127.0.0.1:18882/audio/
+```
+
+The instance, region, profile, local/gateway ports, CLI path, local cache and
+remote scratch directory are configurable with `--help`. The default local cache
+is `~/.cache/ordinary-muse/private-preview` (0700). Each run creates a unique
+scratch directory under `/srv/ordinary-muse-h5/preview-cache/` on ECS. Authentication
+uses the existing Workbench profile; credentials are never copied into the repo.
+
+The preview keeps running until explicitly stopped; it has no 30-minute idle
+exit. For continued use after closing the Terminal, start it in the background:
+
+```bash
+nohup python3.11 deploy/ecs/private_preview.py > /tmp/ordinary-muse-preview.log 2>&1 &
+```
+
+Restart it after rebooting this Mac. Static assets are cached per URL, so restart
+the preview or use a new asset/page version query after deploying changed files.
+Media is downloaded completely once, then full, seek, suffix and HEAD requests
+are served locally. Cached playback is independent of the Workbench transport
+lock, preventing a second player's network request from blocking the first.
+Cache access stops at the task's recorded `expires_at`; the cache is a local
+download copy, not the model's task store. After stopping the preview, local media
+copies can be removed from `--cache-dir`. Remote temporary response files are
+removed after successful transfers. Do not run other Workbench commands against
+the same shared session during an uncached transfer.
+
+Regression checks (no ECS credentials or model required):
+
+```bash
+python3.11 -m unittest discover -s deploy/ecs/tests -v
+```
+
 The dedicated, key-only Mac reverse-tunnel account and its restrictions are
 documented in [ssh/README.md](ssh/README.md). It only permits remote forwarding to
 `127.0.0.1:19000`; the new Mac public key is still pending authorization.

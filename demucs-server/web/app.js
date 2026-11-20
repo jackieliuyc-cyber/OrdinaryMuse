@@ -1,7 +1,160 @@
 "use strict";
+// One audio clock schedules every stem, including after pause/seek/solo changes.
+class StemMixer {
+  constructor(tracks, onChange = () => {}) {
+    this.tracks = tracks.map(track => ({...track, volume: .88, muted: false, buffer: null, gain: null}));
+    this.onChange = onChange;
+    this.context = null; this.sources = []; this.offset = 0; this.when = 0;
+    this.duration = 0; this.playing = false; this.loading = false; this.loaded = 0;
+    this.solo = null; this.disposed = false; this.intent = 0; this.run = 0;
+  }
+  notify() { if (!this.disposed) this.onChange(this); }
+  position() {
+    return Math.min(this.duration, this.offset + (this.playing ? Math.max(0, this.context.currentTime - this.when) : 0));
+  }
+  graph() {
+    if (this.context) return;
+    const Audio = window.AudioContext || window.webkitAudioContext;
+    if (!Audio) throw new Error("当前浏览器不支持同步混音，请使用新版 Safari、Chrome 或 Edge。");
+    this.context = new Audio();
+    this.master = this.context.createGain();
+    const limiter = this.context.createDynamicsCompressor();
+    limiter.threshold.value = -1; limiter.knee.value = 0; limiter.ratio.value = 20;
+    limiter.attack.value = .003; limiter.release.value = .1;
+    this.master.connect(limiter); limiter.connect(this.context.destination);
+    for (const track of this.tracks) {
+      track.gain = this.context.createGain(); track.gain.connect(this.master);
+    }
+    this.updateGains();
+  }
+  async prepare() {
+    if (this.pending) return this.pending;
+    if (this.tracks.every(track => track.buffer)) return;
+    this.loading = true; this.loaded = this.tracks.filter(track => track.buffer).length;
+    const controller = this.controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000);
+    this.notify();
+    this.pending = Promise.allSettled(this.tracks.map(async track => {
+      if (track.buffer) return track.buffer;
+      try {
+        const response = await fetch(track.url, {signal: controller.signal, cache: "no-store"});
+        if (!response.ok) throw new Error(response.status === 410 ? "音轨已过期，请重新分轨。" : `音轨加载失败 (${response.status})，请重试。`);
+        const buffer = await this.context.decodeAudioData(await response.arrayBuffer());
+        if (!this.disposed && !controller.signal.aborted) { this.loaded++; this.notify(); }
+        return buffer;
+      } catch (error) { controller.abort(); throw error; }
+    })).then(results => {
+      const errors = results.filter(result => result.status === "rejected").map(result => result.reason);
+      if (errors.length) throw errors.find(error => error.name !== "AbortError") || errors[0];
+      if (!this.disposed && controller.signal.aborted) throw Object.assign(new Error("音轨加载已中断"), {name: "AbortError"});
+      if (!this.disposed) {
+        this.tracks.forEach((track, index) => { track.buffer = results[index].value; });
+        this.duration = Math.max(...this.tracks.map(track => track.buffer.duration));
+      }
+    }).catch(error => {
+      this.controller.abort();
+      throw error.name === "AbortError" ? new Error("音轨加载超时或连接中断，请重试。") : error;
+    }).finally(() => {
+      clearTimeout(timeout); this.loading = false; this.pending = null; this.notify();
+    });
+    return this.pending;
+  }
+  async play() {
+    if (this.disposed || this.playing || !this.tracks.length) return;
+    const intent = ++this.intent;
+    this.graph();
+    // Resume immediately inside the user's click, before downloading any audio.
+    const resumed = this.context.resume();
+    await Promise.all([resumed, this.prepare()]);
+    if (this.disposed || intent !== this.intent) return;
+    if (this.offset >= this.duration) this.offset = 0;
+    this.schedule();
+  }
+  stopSources() {
+    this.run++;
+    for (const source of this.sources) { source.onended = null; source.stop(); source.disconnect(); }
+    this.sources = [];
+  }
+  schedule() {
+    this.stopSources(); this.updateGains();
+    this.when = this.context.currentTime + .05;
+    const run = this.run;
+    this.playing = true;
+    for (const track of this.tracks) {
+      if (this.offset >= track.buffer.duration) continue;
+      const source = this.context.createBufferSource();
+      source.buffer = track.buffer; source.connect(track.gain);
+      source.onended = () => {
+        if (this.disposed || run !== this.run || !this.playing) return;
+        if (this.position() >= this.duration - .02) {
+          this.offset = this.duration; this.playing = false; this.stopSources(); this.notify();
+        }
+      };
+      this.sources.push(source); source.start(this.when, this.offset);
+    }
+    this.notify();
+  }
+  pause() {
+    this.intent++; this.offset = this.position(); this.playing = false;
+    this.stopSources(); this.notify();
+  }
+  seek(seconds) {
+    if (!Number.isFinite(seconds)) return;
+    this.offset = Math.max(0, Math.min(this.duration, seconds));
+    if (this.playing) {
+      if (this.offset >= this.duration) { this.playing = false; this.stopSources(); }
+      else this.schedule();
+    }
+    this.notify();
+  }
+  updateGains() {
+    if (!this.context) return;
+    for (const track of this.tracks) {
+      const value = track.muted || (this.solo && this.solo !== track.name) ? 0 : track.volume;
+      const gain = track.gain.gain, now = this.context.currentTime;
+      gain.cancelScheduledValues(now);
+      if (this.playing) gain.setTargetAtTime(value, now, .015);
+      else gain.setValueAtTime(value, now);
+    }
+  }
+  setVolume(name, value) {
+    const track = this.tracks.find(track => track.name === name);
+    if (!track || !Number.isFinite(value)) return;
+    track.volume = Math.max(0, Math.min(1, value)); this.updateGains(); this.notify();
+  }
+  toggleMute(name) {
+    const track = this.tracks.find(track => track.name === name);
+    if (!track) return;
+    track.muted = !track.muted; this.updateGains(); this.notify();
+  }
+  setSolo(name) {
+    if (name && !this.tracks.some(track => track.name === name)) return;
+    this.solo = name;
+    if (name) this.tracks.find(track => track.name === name).muted = false;
+    this.updateGains(); this.notify();
+  }
+  reset() {
+    this.solo = null;
+    for (const track of this.tracks) { track.volume = .88; track.muted = false; }
+    this.updateGains(); this.notify();
+  }
+  dispose() {
+    this.disposed = true; this.intent++; this.playing = false; this.stopSources();
+    if (this.controller) this.controller.abort();
+    for (const track of this.tracks) { track.buffer = null; if (track.gain) track.gain.disconnect(); }
+    if (this.context) this.context.close().catch(() => {});
+  }
+}
+
 const $ = (id) => document.getElementById(id);
 const labels = { uploading: "正在接收", queued: "排队中", processing: "处理中", completed: "已完成", failed: "处理失败", expired: "任务已失效", unknown: "待确认" };
 const stemLabels = { vocals: "人声", drums: "鼓", bass: "贝斯", other: "其他乐器" };
+const stageLabels = {
+  loading: "正在读取音频", loading_audio: "正在读取音频", preparing: "正在准备音频",
+  inference: "正在分离音轨", separating: "正在分离音轨",
+  saving: "正在保存音轨", saving_stems: "正在保存音轨",
+  encoding: "正在生成试听音频", encoding_aac: "正在生成试听音频",
+};
 const storageKey = "ordinary-muse-tasks-v1";
 const localPreview = location.protocol === "file:";
 // Resolve every API/media URL within this page's mount (e.g. /audio/), while
@@ -11,12 +164,30 @@ function apiUrl(path) { return new URL(path.replace(/^\/+/, ""), appBaseUrl).hre
 let config = { max_file_size_mb: 50, allowed_extensions: [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"] };
 let selectedFile = null, uploading = false, activeId = null, pollTimer = null, generation = 0;
 let mode = "separation", extractionSource = null;
+let elapsedTimer = null;
+let mixer = null, mixerTimer = null;
+let downloadJob = null, downloadTimer = null;
+const mixerControls = new Map();
+const controlIcons = {
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5.5v13l10-6.5z" fill="currentColor" stroke="none"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6.5" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13.5" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/></svg>',
+  volume: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 5 6 9H3v6h3l5 4zM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>',
+  muted: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 5 6 9H3v6h3l5 4zM16 9l5 6m0-6-5 6"/></svg>',
+  reset: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 10a8 8 0 1 1 1.5 7M4 4v6h6"/></svg>',
+  loading: '<svg class="control-spinner" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8" opacity=".25"/><path d="M12 4a8 8 0 0 1 8 8"/></svg>',
+};
+function controlIcon(button, name, label) {
+  if (button.dataset.icon !== name) { button.innerHTML = controlIcons[name]; button.dataset.icon = name; }
+  button.setAttribute("aria-label", label); button.title = label;
+}
 const videoDefaults = [".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"];
 
 function fileRules() {
   return mode === "extraction" ? { extensions: config.video_extensions || videoDefaults, size: config.max_video_size_mb || 500 } : { extensions: config.allowed_extensions, size: config.max_file_size_mb };
 }
 function resetResults() {
+  resetDownload();
+  disposeMixer();
   $("results").hidden = true; $("extraction-results").hidden = true;
   $("empty-results").hidden = mode === "extraction"; $("extraction-empty").hidden = mode !== "extraction";
   $("tracks").replaceChildren(); $("extraction-player").pause();
@@ -38,7 +209,7 @@ function setMode(value) {
   $("result-title").textContent = video ? "你的提取音频" : "探索独立音轨";
   $("result-count").textContent = video ? "AUDIO" : "4 STEMS";
   $("start").textContent = video ? "开始提取 ↗" : "开始分离 ↗";
-  $("start").disabled = true; $("status-box").hidden = true;
+  $("start").disabled = true; $("status-box").hidden = true; clearTaskProgress();
   resetResults(); renderHistory();
 }
 let records = [];
@@ -67,10 +238,49 @@ function renderHistory() {
   }
 }
 function status(title, detail, error = false) {
+  clearTaskProgress();
   $("status-box").hidden = false;
   $("status-box").classList.toggle("error", error);
   $("status-title").textContent = title;
   $("status-detail").textContent = detail;
+}
+function clearTaskProgress() {
+  clearInterval(elapsedTimer); elapsedTimer = null;
+  $("task-progress-box").hidden = true;
+}
+function formatElapsed(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分`;
+}
+function showTaskProgress(task) {
+  const queued = task.status === "queued";
+  const known = task.status === "processing" && typeof task.progress === "number" && Number.isFinite(task.progress);
+  const title = queued ? "排队中" : task.status === "processing"
+    ? stageLabels[task.stage] || (task.kind === "extraction" ? "正在提取音频" : "正在分离音轨")
+    : labels[task.status] || "正在处理";
+  status(title, queued ? "前面的任务正在处理，轮到你时会自动开始。"
+    : `${known ? "进度由服务端更新。" : "服务端暂未提供处理百分比。"}可以离开页面，稍后从最近的创作中查看。`);
+  $("task-progress-box").hidden = false;
+  if (known) {
+    // Completion includes exporting files; reserve 100% for a completed task.
+    const percent = Math.max(0, Math.min(99, Math.floor(task.progress)));
+    $("task-progress").value = percent;
+    $("task-percent").textContent = `${percent}%`;
+  } else {
+    $("task-progress").removeAttribute("value");
+    $("task-percent").textContent = queued ? "等待开始" : "进度待更新";
+  }
+  const started = task.status === "processing" ? Date.parse(task.started_at || task.processing_started_at || "") : NaN;
+  const origin = Number.isFinite(started) ? started : Date.parse(task.created_at || "");
+  $("task-elapsed").hidden = !Number.isFinite(origin);
+  if (Number.isFinite(origin)) {
+    const updateElapsed = () => {
+      $("task-elapsed").textContent = `${Number.isFinite(started) ? "已处理" : "提交已过"} ${formatElapsed(Date.now() - origin)}`;
+    };
+    updateElapsed(); elapsedTimer = setInterval(updateElapsed, 1000);
+  }
 }
 function setUploading(value) {
   uploading = value;
@@ -207,7 +417,7 @@ async function poll(id, version) {
     if (task.status === "failed") {
       status("处理失败", task.error || "请换一个文件重试。", true); return;
     }
-    status(task.status === "processing" && task.kind === "extraction" ? "正在提取音频" : labels[task.status] || "正在处理", task.status === "queued" ? "前面的任务正在处理，轮到你时会自动开始。" : "服务端正在处理文件。可以离开页面，稍后从最近的创作中查看。");
+    showTaskProgress(task);
     pollTimer = setTimeout(() => poll(id, version), 3000);
   } catch (error) {
     if (version !== generation) return;
@@ -221,15 +431,18 @@ async function poll(id, version) {
   }
 }
 function showResults(id, task) {
+  resetDownload();
+  disposeMixer();
   $("extraction-empty").hidden = true; $("extraction-results").hidden = true;
   $("result-title").textContent = "探索独立音轨"; $("result-count").textContent = "4 STEMS";
   $("empty-results").hidden = true; $("results").hidden = false;
   $("result-filename").textContent = task.filename;
   $("tracks").replaceChildren();
   const base = apiUrl(`/api/v1/task/${encodeURIComponent(id)}`);
+  const sources = [];
   for (const name of Object.keys(task.stems || {})) {
     const track = document.createElement("div"), head = document.createElement("div"), title = document.createElement("strong");
-    track.className = "track"; head.className = "track-head"; title.textContent = stemLabels[name] || name;
+    track.className = "track"; track.dataset.stem = name; head.className = "track-head"; title.textContent = stemLabels[name] || name;
     head.append(title);
     const stemUrl = `${base}/stem/${encodeURIComponent(name)}`;
     const hasM4a = Boolean(task.aac_stems && task.aac_stems[name]);
@@ -238,16 +451,173 @@ function showResults(id, task) {
       link.download = `${name}.${format}`; link.textContent = `${format.toUpperCase()} ↓`;
       link.setAttribute("aria-label", `下载${title.textContent} ${format.toUpperCase()}`); head.append(link);
     }
-    const audio = document.createElement("audio"); audio.controls = true; audio.preload = "none";
-    audio.src = `${stemUrl}?format=${hasM4a ? "m4a" : "wav"}`; audio.setAttribute("aria-label", `试听${title.textContent}`);
-    audio.addEventListener("play", () => document.querySelectorAll("audio").forEach(other => { if (other !== audio) other.pause(); }));
-    audio.addEventListener("error", () => status("音轨暂时无法播放", "请检查网络或尝试下载文件。文件可能已过期，也可能是浏览器不支持此格式。", true));
-    track.append(head, audio); $("tracks").append(track);
+    sources.push({name, url: `${stemUrl}?format=${hasM4a ? "m4a" : "wav"}`});
+    const controls = document.createElement("div"), solo = document.createElement("button"), mute = document.createElement("button");
+    controls.className = "track-controls";
+    solo.type = mute.type = "button"; solo.className = mute.className = "icon-button";
+    solo.setAttribute("aria-label", `单独试听${title.textContent}`); mute.setAttribute("aria-label", `静音${title.textContent}`);
+    solo.addEventListener("click", () => runMixer(async current => {
+      if (current.playing && current.solo === name) current.pause();
+      else { current.setSolo(name); await current.play(); }
+    }));
+    mute.addEventListener("click", () => mixer && mixer.toggleMute(name));
+    const label = document.createElement("label"), volume = document.createElement("input"), value = document.createElement("output");
+    label.className = "track-volume"; volume.type = "range"; volume.min = "0"; volume.max = "100"; volume.step = "1";
+    volume.value = "88"; volume.setAttribute("aria-label", `${title.textContent}音量`);
+    volume.addEventListener("input", () => mixer && mixer.setVolume(name, Number(volume.value) / 100));
+    label.append(volume, value); controls.append(solo, mute, label);
+    mixerControls.set(name, {solo, mute, volume, value, card:track});
+    track.append(head, controls); $("tracks").append(track);
   }
+  mixer = new StemMixer(sources, current => { if (current === mixer) renderMixer(); });
+  $("mixer").hidden = !sources.length; renderMixer();
   $("download-all").href = `${base}/download`;
+  $("download-all").download = `${(task.filename || "音轨").replace(/\.[^.]*$/, "").replace(/[\\/:*?"<>|\r\n]/g, "_")}-stems.zip`;
+}
+
+function resetDownload() {
+  if (downloadJob) {
+    downloadJob.controller.abort();
+    if (downloadJob.blobUrl) URL.revokeObjectURL(downloadJob.blobUrl);
+    $("download-all").href = downloadJob.source;
+  }
+  downloadJob = null; clearInterval(downloadTimer); downloadTimer = null;
+  $("download-all").textContent = "下载全部 WAV 音轨 ↓";
+  $("download-all").setAttribute("aria-disabled", "false");
+  $("download-status").hidden = true; $("download-cancel").hidden = true;
+  $("download-progress").hidden = true;
+}
+function renderDownload(job) {
+  if (downloadJob !== job) return;
+  const mb = value => (value / 1024 / 1024).toFixed(1);
+  $("download-status").hidden = false;
+  $("download-cancel").hidden = !job.busy;
+  $("download-progress").hidden = !job.busy;
+  $("download-all").setAttribute("aria-disabled", String(job.busy));
+  if (job.busy) {
+    $("download-all").textContent = job.received ? "正在接收压缩包…" : "正在准备压缩包…";
+    $("download-message").textContent = job.received
+      ? `已接收 ${mb(job.received)} MB${job.total ? ` / ${mb(job.total)} MB` : ""}，请保持页面打开。`
+      : `正在准备并传输 WAV 压缩包，已等待 ${formatElapsed(Date.now() - job.started)}。文件较大，请保持页面打开。`;
+    if (job.total) $("download-progress").value = Math.min(99, job.received / job.total * 100);
+    else $("download-progress").removeAttribute("value");
+  }
+}
+async function downloadAll(event) {
+  // Leave a ready Blob link as a real user-clickable download (Safari/WebViews).
+  if (downloadJob && downloadJob.blobUrl) return;
+  event.preventDefault();
+  if (downloadJob && downloadJob.busy) return;
+  const link = $("download-all");
+  const job = downloadJob = {source:link.href, controller:new AbortController(), busy:true, started:Date.now(), received:0, total:0};
+  const timeout = setTimeout(() => { job.timedOut = true; job.controller.abort(); }, 600000);
+  renderDownload(job); downloadTimer = setInterval(() => renderDownload(job), 1000);
+  try {
+    const response = await fetch(job.source, {signal:job.controller.signal, cache:"no-store"});
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(typeof error.detail === "string" ? error.detail : `下载失败 (${response.status})`);
+    }
+    const type = response.headers.get("Content-Type") || "";
+    if (!/application\/(zip|octet-stream)/i.test(type)) throw new Error("服务未返回 ZIP 文件，请稍后重试。");
+    job.total = Number(response.headers.get("Content-Length")) || 0;
+    const chunks = [];
+    if (response.body && response.body.getReader) {
+      const reader = response.body.getReader();
+      let lastRender = 0;
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        if (downloadJob !== job) return;
+        if (job.controller.signal.aborted) throw new Error("下载已取消");
+        chunks.push(value); job.received += value.byteLength;
+        if (Date.now() - lastRender > 150) { renderDownload(job); lastRender = Date.now(); }
+      }
+    } else {
+      const bytes = await response.arrayBuffer(); chunks.push(bytes); job.received = bytes.byteLength;
+    }
+    if (job.total && !response.headers.get("Content-Encoding") && job.received !== job.total) throw new Error("压缩包未接收完整，请重试。");
+    const blob = new Blob(chunks, {type:"application/zip"});
+    chunks.length = 0;
+    const signature = new Uint8Array(await blob.slice(0,4).arrayBuffer());
+    if (signature.length !== 4 || signature[0] !== 80 || signature[1] !== 75 || signature[2] !== 3 || signature[3] !== 4) throw new Error("压缩包内容无效，请重试或分别下载音轨。");
+    if (downloadJob !== job) return;
+    if (job.controller.signal.aborted) throw new Error("下载已取消");
+    job.blobUrl = URL.createObjectURL(blob); job.busy = false;
+    link.href = job.blobUrl; link.textContent = `保存 ZIP（${(blob.size/1024/1024).toFixed(1)} MB）↓`;
+    $("download-message").textContent = "压缩包已完整接收。若未自动保存，请点击“保存 ZIP”；内置浏览器仍无保存窗口时，可在 Chrome / Safari 打开此页面保存。";
+    try { link.click(); } catch { /* The visible Blob link remains available for a manual save. */ }
+  } catch (error) {
+    if (downloadJob !== job) return;
+    job.busy = false;
+    link.textContent = "重试下载全部 WAV 音轨 ↓";
+    $("download-message").textContent = job.controller.signal.aborted
+      ? job.timedOut ? "下载等待超时，可重试或分别下载音轨。" : "已取消下载，可以重新开始。"
+      : error.message || "下载失败，请检查网络后重试。";
+  } finally {
+    clearTimeout(timeout);
+    if (downloadJob === job) {
+      clearInterval(downloadTimer); downloadTimer = null;
+      $("download-all").setAttribute("aria-disabled", "false");
+      $("download-cancel").hidden = true; $("download-progress").hidden = true;
+    }
+  }
+}
+
+function disposeMixer() {
+  clearInterval(mixerTimer); mixerTimer = null;
+  if (mixer) mixer.dispose();
+  mixer = null; mixerControls.clear(); $("mixer").hidden = true;
+}
+function mixTime(seconds) {
+  const value = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+}
+function renderMixer() {
+  if (!mixer) return;
+  $("mix-play").disabled = mixer.loading || (mixer.playing && !mixer.solo);
+  controlIcon($("mix-play"), mixer.loading ? "loading" : "play", mixer.loading ? "正在载入音轨" : mixer.playing && !mixer.solo ? "正在合并播放" : "合并播放");
+  $("mix-play").setAttribute("aria-busy", String(mixer.loading));
+  controlIcon($("mix-pause"), "pause", "暂停播放");
+  controlIcon($("mix-reset"), "reset", "重置所有音轨音量");
+  $("mix-pause").disabled = !mixer.playing;
+  $("mix-seek").disabled = !mixer.duration;
+  const current = mixer.position();
+  $("mix-seek").value = mixer.duration ? Math.round(current / mixer.duration * 1000) : 0;
+  $("mix-seek").setAttribute("aria-valuetext", `${mixTime(current)} / ${mixTime(mixer.duration)}`);
+  $("mix-time").textContent = `${mixTime(current)} / ${mixTime(mixer.duration)}`;
+  $("mix-message").textContent = mixer.loading ? `正在载入音轨 ${mixer.loaded}/${mixer.tracks.length}，首次播放需要等待加载完成。`
+    : mixer.playing ? mixer.solo ? `正在单独试听${stemLabels[mixer.solo] || mixer.solo}` : "正在播放当前混音 · 音量调节实时生效"
+    : mixer.duration ? "已暂停 · 可继续播放或拖动进度" : "调整各轨音量后，点击合并播放。";
+  for (const track of mixer.tracks) {
+    const controls = mixerControls.get(track.name);
+    controls.volume.value = String(Math.round(track.volume * 100)); controls.value.textContent = `${Math.round(track.volume * 100)}%`;
+    const name = stemLabels[track.name] || track.name;
+    const soloPlaying = mixer.playing && mixer.solo === track.name;
+    controlIcon(controls.mute, track.muted ? "muted" : "volume", `${track.muted ? "取消静音" : "静音"}${name}`);
+    controls.mute.setAttribute("aria-pressed", String(track.muted));
+    controlIcon(controls.solo, soloPlaying ? "pause" : "play", `${soloPlaying ? "暂停" : "单独播放"}${name}`);
+    controls.solo.setAttribute("aria-pressed", String(mixer.solo === track.name)); controls.solo.disabled = mixer.loading;
+    const audible = !track.muted && track.volume > 0 && (!mixer.solo || mixer.solo === track.name);
+    controls.card.classList.toggle("is-playing", mixer.playing && audible);
+    controls.card.classList.toggle("is-muted", !audible);
+  }
+  if (mixer.playing && !mixerTimer) mixerTimer = setInterval(renderMixer, 250);
+  if (!mixer.playing) { clearInterval(mixerTimer); mixerTimer = null; }
+}
+async function runMixer(action) {
+  const current = mixer;
+  if (!current) return;
+  $("extraction-player").pause();
+  try { await action(current); }
+  catch (error) {
+    if (mixer === current && !current.disposed) { renderMixer(); $("mix-message").textContent = error.message || "混音播放失败，请重试。"; }
+  }
 }
 
 function showExtraction(id, task) {
+  resetDownload();
+  disposeMixer();
   $("empty-results").hidden = true; $("extraction-empty").hidden = true; $("results").hidden = true;
   $("extraction-results").hidden = false; $("result-title").textContent = "你的提取音频";
   $("result-count").textContent = task.export_format.toUpperCase();
@@ -285,6 +655,14 @@ $("dropzone").addEventListener("drop", event => selectFile(event.dataTransfer.fi
 $("start").addEventListener("click", submit);
 $("retry").addEventListener("click", () => activeId && activate(activeId));
 $("connection").addEventListener("click", checkConnection);
+$("mix-play").addEventListener("click", () => runMixer(async current => {
+  current.setSolo(null); await current.play();
+}));
+$("mix-pause").addEventListener("click", () => mixer && mixer.pause());
+$("mix-seek").addEventListener("input", () => mixer && mixer.seek(Number($("mix-seek").value) / 1000 * mixer.duration));
+$("mix-reset").addEventListener("click", () => mixer && mixer.reset());
+$("download-all").addEventListener("click", downloadAll);
+$("download-cancel").addEventListener("click", () => downloadJob && downloadJob.controller.abort());
 document.addEventListener("visibilitychange", () => { if (!document.hidden && activeId && !uploading && $("results").hidden && $("extraction-results").hidden) activate(activeId); });
 window.addEventListener("beforeunload", event => { if (uploading) { event.preventDefault(); event.returnValue = ""; } });
 async function init() {
